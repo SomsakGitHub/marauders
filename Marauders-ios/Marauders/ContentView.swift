@@ -13,6 +13,18 @@ struct ContentView: View {
     @Query private var items: [Item]
 
     var body: some View {
+        TabView {
+            Tab("Items", systemImage: "list.bullet") {
+                itemsList
+            }
+
+            Tab("Map", systemImage: "map") {
+                MapView()
+            }
+        }
+    }
+
+    private var itemsList: some View {
         NavigationSplitView {
             List {
                 ForEach(items) { item in
