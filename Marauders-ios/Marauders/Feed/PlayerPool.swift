@@ -29,7 +29,9 @@ final class PlayerPool {
 
     func attach(to post: VideoPost) -> AVPlayer? {
         pinned.insert(post.videoURL)
-        return resolve(post)
+        let player = resolve(post)
+        evictIfNeeded()
+        return player
     }
 
     func detach(from post: VideoPost) {
