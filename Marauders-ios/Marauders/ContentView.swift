@@ -9,7 +9,17 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        MapView()
+        TabView {
+            VideoFeedView()
+                .tabItem {
+                    Label("Home", systemImage: "play.rectangle.fill")
+                }
+
+            MapView()
+                .tabItem {
+                    Label("Map", systemImage: "map.fill")
+                }
+        }
     }
 }
 
