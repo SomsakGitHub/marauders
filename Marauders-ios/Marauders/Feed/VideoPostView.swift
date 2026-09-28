@@ -8,6 +8,12 @@
 import AVFoundation
 import SwiftUI
 
+enum PlaybackLoadState: Equatable {
+    case loading
+    case ready
+    case failed(String)
+}
+
 struct VideoPostView: View {
     let post: VideoPost
     let isActive: Bool
@@ -15,21 +21,28 @@ struct VideoPostView: View {
     let onToggleLike: () -> Void
     let onToggleSave: () -> Void
 
+    @State private var player: AVPlayer?
+    @State private var loadState: PlaybackLoadState = .loading
     @State private var isMuted = false
     @State private var isUserPaused = false
     @State private var showHeartBurst = false
     @State private var isDiscSpinning = false
     @State private var progress: Double = 0
+
     @State private var timeToken: Any?
+    @State private var statusObservation: NSKeyValueObservation?
+    @State private var failureToken: (any NSObjectProtocol)?
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if let player = pool.player(for: post) {
+            if let player {
                 VideoPlayerSurface(player: player)
                     .ignoresSafeArea()
             }
+
+            statusOverlay
 
             LinearGradient(
                 colors: [.black.opacity(0.45), .clear, .black.opacity(0.75)],
@@ -53,7 +66,6 @@ struct VideoPostView: View {
                     .foregroundStyle(.red)
                     .shadow(radius: 12)
                     .transition(.scale.combined(with: .opacity))
-                    .id("heart-burst")
             }
 
             VStack {
@@ -75,24 +87,61 @@ struct VideoPostView: View {
         .gesture(tapGesture)
         .onAppear {
             isDiscSpinning = true
-            installTimeObserver()
+            bindPlayer()
         }
         .onDisappear {
-            removeTimeObserver()
+            unbindPlayer()
         }
-        .onChange(of: isActive) { _, active in
-            guard let player = pool.player(for: post) else { return }
-            if active {
-                if !isUserPaused { player.play() }
-            } else {
-                player.pause()
-                player.seek(to: .zero)
-                progress = 0
+        .onChange(of: isActive) { _, _ in
+            syncPlayback()
+        }
+    }
+
+    @ViewBuilder
+    private var statusOverlay: some View {
+        switch loadState {
+        case .loading:
+            ProgressView()
+                .controlSize(.large)
+                .tint(.white.opacity(0.9))
+        case .failed(let message):
+            errorCard(message)
+        case .ready:
+            EmptyView()
+        }
+    }
+
+    private func errorCard(_ message: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 34))
+                .foregroundStyle(.white)
+
+            Text("โหลดวิดีโอไม่สำเร็จ")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            Text(message)
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white.opacity(0.7))
+                .lineLimit(2)
+
+            Button {
+                retry()
+            } label: {
+                Label("ลองใหม่", systemImage: "arrow.clockwise")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(.white, in: Capsule())
             }
+            .buttonStyle(.plain)
         }
-        .onChange(of: isMuted) { _, muted in
-            pool.cachedPlayer(for: post.videoURL)?.isMuted = muted
-        }
+        .padding(24)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .padding(.horizontal, 40)
     }
 
     private var topBar: some View {
@@ -286,21 +335,83 @@ struct VideoPostView: View {
     }
 
     private func togglePlayback() {
-        guard isActive, let player = pool.player(for: post) else { return }
+        guard isActive else { return }
         isUserPaused.toggle()
-        if isUserPaused {
-            player.pause()
-        } else {
-            player.play()
-        }
+        syncPlayback()
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
     }
 
-    private func installTimeObserver() {
-        guard timeToken == nil, let player = pool.player(for: post) else { return }
+    private func syncPlayback() {
+        guard let player else { return }
+        if isActive && !isUserPaused {
+            player.play()
+        } else {
+            player.pause()
+        }
+    }
+
+    private func bindPlayer() {
+        guard player == nil, let bound = pool.attach(to: post) else { return }
+        player = bound
+        player?.isMuted = isMuted
+        loadState = .loading
+        observeItem(of: bound)
+        installTimeObserver(on: bound)
+        syncPlayback()
+    }
+
+    private func unbindPlayer() {
+        removeTimeObserver()
+        if let statusObservation {
+            statusObservation.invalidate()
+            self.statusObservation = nil
+        }
+        if let failureToken {
+            NotificationCenter.default.removeObserver(failureToken)
+            self.failureToken = nil
+        }
+        pool.detach(from: post)
+        player?.pause()
+        player = nil
+    }
+
+    private func observeItem(of bound: AVPlayer) {
+        guard let item = bound.currentItem else {
+            loadState = .failed("ไม่พบไฟล์วิดีโอ")
+            return
+        }
+
+        statusObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
+            let state: PlaybackLoadState
+            switch item.status {
+            case .readyToPlay:
+                state = .ready
+            case .failed:
+                let message = item.error?.localizedDescription ?? "เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ"
+                state = .failed(message)
+            default:
+                state = .loading
+            }
+            Task { @MainActor in
+                loadState = state
+            }
+        }
+
+        failureToken = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak bound] note in
+            let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            loadState = .failed(error?.localizedDescription ?? "เล่นวิดีโอไม่สำเร็จ")
+            bound?.pause()
+        }
+    }
+
+    private func installTimeObserver(on bound: AVPlayer) {
         let interval = CMTime(seconds: 0.05, preferredTimescale: 600)
-        timeToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
-            let duration = player.currentItem?.duration.seconds ?? 0
+        timeToken = bound.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+            let duration = bound.currentItem?.duration.seconds ?? 0
             guard duration.isFinite, duration > 0 else { return }
             let value = time.seconds / duration
             progress = value.isFinite ? min(max(value, 0), 1) : 0
@@ -308,9 +419,19 @@ struct VideoPostView: View {
     }
 
     private func removeTimeObserver() {
-        guard let timeToken, let player = pool.cachedPlayer(for: post.videoURL) else { return }
-        player.removeTimeObserver(timeToken)
-        self.timeToken = nil
+        if let timeToken, let bound = player {
+            bound.removeTimeObserver(timeToken)
+        }
+        timeToken = nil
+    }
+
+    private func retry() {
+        unbindPlayer()
+        pool.invalidate(post)
+        loadState = .loading
+        progress = 0
+        isUserPaused = false
+        bindPlayer()
     }
 }
 

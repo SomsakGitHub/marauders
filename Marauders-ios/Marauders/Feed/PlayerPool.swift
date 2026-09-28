@@ -11,14 +11,63 @@ import Foundation
 final class PlayerPool {
     private var players: [URL: AVPlayer] = [:]
     private var accessOrder: [URL] = []
+    private var pinned: Set<URL> = []
     private var loopTokens: [URL: any NSObjectProtocol] = [:]
+    private var activeURL: URL?
     private let capacity: Int
 
     init(capacity: Int = 3) {
         self.capacity = capacity
+        observeSessionEvents()
     }
 
-    func player(for post: VideoPost) -> AVPlayer? {
+    deinit {
+        for token in loopTokens.values {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
+    func attach(to post: VideoPost) -> AVPlayer? {
+        pinned.insert(post.videoURL)
+        return resolve(post)
+    }
+
+    func detach(from post: VideoPost) {
+        pinned.remove(post.videoURL)
+    }
+
+    func activate(_ post: VideoPost?) {
+        guard let post else { return }
+        activeURL = post.videoURL
+        pauseAll(except: post.videoURL)
+    }
+
+    func warm(_ posts: [VideoPost]) {
+        for post in posts {
+            _ = resolve(post)
+        }
+        evictIfNeeded()
+    }
+
+    func invalidate(_ post: VideoPost) {
+        release(post.videoURL)
+    }
+
+    func setMuted(_ isMuted: Bool, for post: VideoPost) {
+        players[post.videoURL]?.isMuted = isMuted
+    }
+
+    func cachedPlayer(for url: URL) -> AVPlayer? {
+        players[url]
+    }
+
+    func pauseAll(except url: URL?) {
+        for (key, player) in players where key != url {
+            player.pause()
+        }
+    }
+
+    private func resolve(_ post: VideoPost) -> AVPlayer? {
         if let cached = players[post.videoURL] {
             touch(post.videoURL)
             return cached
@@ -35,28 +84,7 @@ final class PlayerPool {
         players[post.videoURL] = player
         accessOrder.append(post.videoURL)
         installLoopObserver(for: post.videoURL, player: player)
-
-        evictIfNeeded()
         return player
-    }
-
-    func cachedPlayer(for url: URL) -> AVPlayer? {
-        players[url]
-    }
-
-    func keepAlive(_ posts: [VideoPost]) {
-        let kept = Set(posts.map(\.videoURL))
-        accessOrder = accessOrder.filter { kept.contains($0) }
-
-        for url in players.keys.map({ $0 }) where !kept.contains(url) {
-            release(url)
-        }
-    }
-
-    func pauseAll(except url: URL?) {
-        for (key, player) in players where key != url {
-            player.pause()
-        }
     }
 
     private func installLoopObserver(for url: URL, player: AVPlayer) {
@@ -66,8 +94,13 @@ final class PlayerPool {
             object: item,
             queue: .main
         ) { [weak player] _ in
-            player?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-            player?.play()
+            guard let player else { return }
+            let wasPlaying = player.rate != 0
+            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                if wasPlaying {
+                    player.play()
+                }
+            }
         }
         loopTokens[url] = token
     }
@@ -88,8 +121,57 @@ final class PlayerPool {
     }
 
     private func evictIfNeeded() {
-        while accessOrder.count > capacity {
-            release(accessOrder[0])
+        while players.count > capacity {
+            guard let victim = accessOrder.first(where: { !pinned.contains($0) }) else { return }
+            release(victim)
+        }
+    }
+
+    private func observeSessionEvents() {
+        let center = NotificationCenter.default
+
+        center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard
+                let self,
+                let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                let type = AVAudioSession.InterruptionType(rawValue: raw),
+                let activeURL = self.activeURL,
+                let player = self.players[activeURL]
+            else { return }
+
+            switch type {
+            case .began:
+                player.pause()
+            case .ended:
+                let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+                if options.contains(.shouldResume) {
+                    player.play()
+                }
+            @unknown default:
+                break
+            }
+        }
+
+        center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard
+                let self,
+                let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
+                let activeURL = self.activeURL
+            else { return }
+
+            if reason == .oldDeviceUnavailable {
+                self.players[activeURL]?.pause()
+            }
         }
     }
 }

@@ -12,6 +12,11 @@ struct VideoFeedView: View {
     @State private var posts = VideoPost.samples
     @State private var currentID: String?
 
+    private var currentPost: VideoPost? {
+        guard let currentID else { return nil }
+        return posts.first { $0.id == currentID }
+    }
+
     var body: some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
@@ -36,29 +41,25 @@ struct VideoFeedView: View {
         .ignoresSafeArea()
         .background(.black)
         .onAppear {
+            AudioSessionController.shared.activate()
             currentID = currentID ?? posts.first?.id
-            warmNeighbourhood(of: currentID)
+            syncPlaybackWindow()
         }
-        .onChange(of: currentID) { _, id in
-            pool.pauseAll(except: id.flatMap(lookupURL))
-            warmNeighbourhood(of: id)
+        .onDisappear {
+            AudioSessionController.shared.deactivate()
+        }
+        .onChange(of: currentID) { _, _ in
+            syncPlaybackWindow()
         }
     }
 
-    private func lookupURL(_ id: String?) -> URL? {
-        guard let id else { return nil }
-        return posts.first { $0.id == id }?.videoURL
-    }
+    private func syncPlaybackWindow() {
+        guard let index = posts.firstIndex(where: { $0.id == currentID }) else { return }
 
-    private func warmNeighbourhood(of id: String?) {
-        guard let index = posts.firstIndex(where: { $0.id == id }) else { return }
         let lower = max(index - 1, 0)
         let upper = min(index + 1, posts.count - 1)
-        let window = Array(posts[lower...upper])
-        pool.keepAlive(window)
-        for post in window {
-            _ = pool.player(for: post)
-        }
+        pool.warm(Array(posts[lower...upper]))
+        pool.activate(posts[index])
     }
 
     private func toggleLike(_ id: String) {
