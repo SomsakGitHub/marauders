@@ -9,8 +9,9 @@ through to the API optimistically and are scoped per viewer.
 
 ## Features
 
-The home screen is the video and nothing else. There is no caption, no action rail and no
-tab bar; a clip fills the screen and the only chrome is what playback itself needs.
+The home screen is the video and nothing else. There is no caption and no action rail; a clip
+fills the screen and the only chrome is what playback itself needs. The tab bar is the single
+exception: it exists to reach the upload tab, and nothing else is in it.
 
 - Full bleed vertical paging, one clip per screen, snapping to the next
 - Landscape clips are shown whole, floating over a blurred, dimmed copy of themselves so a
@@ -22,9 +23,10 @@ tab bar; a clip fills the screen and the only chrome is what playback itself nee
   pulling another page first if the failure landed on the tail. The failure card stays for
   anyone who scrolls back to a dead post on purpose
 - Cursor based pagination that prefetches as the tail comes into view, plus an end of feed marker
-- A `+` button that picks a video from the phone, uploads it, creates the post and scrolls
-  straight to it. The clip is staged out of the photo library before the transfer, because the
-  library's own file is temporary and can disappear the moment the picker call returns
+- An "เพิ่ม" tab that picks a video from the phone, uploads it, creates the post and returns
+  to the feed scrolled onto it. The clip is staged out of the photo library before the transfer,
+  because the library's own file is temporary and can disappear the moment the picker call
+  returns
 - `AVAudioSession` on `.ambient` with `.mixWithOthers`: there is no mute button, so the
   hardware silent switch has to keep working and a clip must never stop other audio.
   The mode is `.default`, not `.moviePlayback`, which `AVAudioSession` only accepts alongside
@@ -36,6 +38,12 @@ reaction flow, but none of it is on screen yet: playback is the thing being tune
 Every seeded post points at a stream that has been verified to actually decode. Two of the
 five Apple sample streams that were in use fail with `CoreMediaErrorDomain -16044`, which is
 why the feed was skipping its own first post on launch.
+
+The production feed is intentionally empty: `npm run db:truncate` clears `posts`,
+`post_likes` and `post_saves` and restarts the identity sequence, and the R2 objects go with
+`npx wrangler r2 object delete marauders-videos/<key> --remote`. The app shows a "ยังไม่มีคลิป"
+card until the first clip is uploaded, because a feed with zero posts is a normal state now
+rather than a bug. `seed.sql` and `npm run db:seed` still bring the samples back for local work.
 
 ## Architecture
 
@@ -52,6 +60,8 @@ flowchart TD
 
     FeedStore -->|cursor, optimistic reactions| FeedAPIClient
     VideoFeedView -->|PhotosPicker| PickedVideo
+    UploadView -->|PhotosPicker| PickedVideo
+    UploadView -->|publish| FeedStore
     FeedStore -->|upload, createPost| FeedAPIClient
     FeedAPIClient -->|URLSession| Worker
 
@@ -78,6 +88,7 @@ flowchart TD
 | `AmbientVideoBackdrop` | `UIViewRepresentable` | Second `AVPlayerLayer` at `.resizeAspectFill` under a `UIVisualEffectView`, used as the blurred backdrop behind a letterboxed clip |
 | `AudioSessionController` | Plain class | Single place that configures the shared `AVAudioSession` |
 | `PickedVideo` | `Transferable` struct | Copies the picked clip out of the photo library onto a path this process owns |
+| `UploadView` | View | The upload tab: picker, progress and error state for publishing a clip |
 | `MultipartBody` | Struct | Encodes the clip as `multipart/form-data`; escapes the filename so it cannot forge a boundary |
 | `repository.ts` | Module | Postgres queries: feed paging, reaction upserts, post creation, cursor encoding |
 | `neon.ts` | Module | Adapts the Neon HTTP driver to the narrow `SqlClient` the repository talks to |
@@ -220,6 +231,12 @@ so `PickedVideo` copies it onto a path this process owns during the transfer; re
 would race the library. Splitting the two API calls also means a post that fails to be created
 can be retried without paying for the transfer again.
 
+**The upload lives in a tab, not on the feed.** `VideoFeedView` owns every `AVPlayer` through
+`PlayerPool` and is sized to the full paging container, so a picker and a progress state on top
+of it would sit on the one surface that must stay distraction free. `ContentView` owns the
+`FeedStore` and hands it to both tabs, so publishing inserts the post at the top of the feed
+and the upload tab asks the feed to scroll onto it. Neither tab refetches.
+
 **A post may only point at a clip this API stored.** `POST /api/posts` matches the URL path
 against `/api/videos/` rather than trusting the origin, so a post cannot aim the feed at a
 third-party host that would then learn who is watching. Because the bucket is private, that
@@ -249,6 +266,7 @@ Marauders-ios/
       FeedAPIClient.swift        URLSession client, viewer identity, errors, upload
       MultipartBody.swift        multipart/form-data encoder for the clip
       PickedVideo.swift          PhotosPicker transfer that stages the clip on disk
+      UploadView.swift           Upload tab: picker, progress and error state
       VideoPost.swift            Post model and preview fixtures
   MaraudersTests/
     PlayerPoolTests.swift        Eviction, pinning and cache tests
@@ -295,8 +313,10 @@ npm run dev                         # http://127.0.0.1:8787
 
 `scripts/db.mjs` applies the SQL through the same Neon HTTP driver the Worker uses, so
 migrating needs no `psql` and no local Postgres. `npm run db:reset` reloads the schema and the
-sample data; `db:migrate` and `db:seed` run the two files separately. The routes answer
-`503 database_not_configured` instead of throwing if `.dev.vars` is missing. Then open the app:
+sample data; `db:migrate` and `db:seed` run the two files separately. `db:truncate` empties
+the feed without touching the schema, which is how the production feed was cleared. The routes
+answer `503 database_not_configured` instead of throwing if `.dev.vars` is missing. Then open
+the app:
 
 ```sh
 open Marauders-ios/Marauders.xcodeproj

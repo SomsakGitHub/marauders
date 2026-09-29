@@ -5,18 +5,18 @@
 //  Created by tiscomacnb2486 on 29/9/2569 BE.
 //
 
-import PhotosUI
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct VideoFeedView: View {
-    @State private var store = FeedStore()
+    /// Owned by `ContentView` so the upload tab publishes into the same feed.
+    let store: FeedStore
+    /// Set when a post is published from another tab, which scrolls the feed to it.
+    @Binding var focusPostID: String?
+
     @State private var pool = PlayerPool()
     @State private var currentID: String?
     @State private var failedIDs: Set<String> = []
     @State private var isExhausted = false
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var isPreparingClip = false
 
     var body: some View {
         ZStack {
@@ -32,7 +32,7 @@ struct VideoFeedView: View {
                 feedErrorCard(message)
 
             case .loaded:
-                feed
+                loadedFeed
             }
 
             if isExhausted, store.phase == .loaded {
@@ -42,24 +42,21 @@ struct VideoFeedView: View {
             if let message = store.actionError {
                 actionErrorToast(message)
             }
-
-            VStack {
-                uploadButton
-                Spacer()
-            }
         }
         .task {
             if case .idle = store.phase {
                 store.loadInitial()
             }
         }
-        .onChange(of: pickerItem) { _, item in
-            guard let item else { return }
-            Task { await publish(item) }
-        }
         .onChange(of: currentID) { _, id in
             syncPlaybackWindow()
             Task { await store.loadMore(after: id) }
+        }
+        .onChange(of: focusPostID) { _, id in
+            guard let id else { return }
+            failedIDs.remove(id)
+            isExhausted = false
+            currentID = id
         }
         .onChange(of: store.phase) { _, phase in
             if phase == .loaded {
@@ -68,6 +65,15 @@ struct VideoFeedView: View {
             }
         }
         .sensoryFeedback(.selection, trigger: currentID)
+    }
+
+    @ViewBuilder
+    private var loadedFeed: some View {
+        if store.posts.isEmpty {
+            emptyFeedCard
+        } else {
+            feed
+        }
     }
 
     private var feed: some View {
@@ -104,68 +110,6 @@ struct VideoFeedView: View {
         }
         .onDisappear {
             AudioSessionController.shared.deactivate()
-        }
-    }
-
-    private var uploadButton: some View {
-        PhotosPicker(
-            selection: $pickerItem,
-            matching: .videos,
-            photoLibrary: .shared()
-        ) {
-            Image(systemName: "plus")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.black)
-                .frame(width: 46, height: 46)
-                .background(.white, in: Circle())
-                .shadow(radius: 8)
-        }
-        .buttonStyle(.plain)
-        .disabled(store.uploadState != .idle || isPreparingClip)
-        .opacity(store.uploadState == .idle && !isPreparingClip ? 1 : 0.6)
-        .overlay {
-            if store.uploadState != .idle || isPreparingClip {
-                ProgressView()
-                    .tint(.black)
-            }
-        }
-        .padding(.top, 8)
-        .padding(.leading, 16)
-        .accessibilityLabel("เพิ่มวิดีโอจากเครื่อง")
-    }
-
-    /// Copies the picked clip out of the photo library before uploading.
-    ///
-    /// The library hands back a temporary file that can vanish as soon as the picker call
-    /// returns, so it is moved to a path this scope owns.
-    private func publish(_ item: PhotosPickerItem) async {
-        isPreparingClip = true
-        defer {
-            isPreparingClip = false
-            pickerItem = nil
-        }
-
-        do {
-            guard let clip = try await item.loadTransferable(type: PickedVideo.self) else {
-                store.report("เลือกคลิปนี้ไม่ได้")
-                return
-            }
-            defer { try? FileManager.default.removeItem(at: clip.url) }
-
-            let newID = await store.publish(
-                clipURL: clip.url,
-                filename: clip.filename,
-                contentType: clip.contentType,
-                caption: ""
-            )
-
-            if let newID {
-                failedIDs.remove(newID)
-                isExhausted = false
-                currentID = newID
-            }
-        } catch {
-            store.report(error.localizedDescription)
         }
     }
 
@@ -211,6 +155,28 @@ struct VideoFeedView: View {
                     .background(.white, in: Capsule())
             }
             .buttonStyle(.plain)
+        }
+        .padding(28)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .padding(.horizontal, 36)
+    }
+
+    /// Shown when the feed has no posts at all, which is the state right after the database is
+    /// cleared and before the first clip is uploaded.
+    private var emptyFeedCard: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "video.badge.plus")
+                .font(.system(size: 40))
+                .foregroundStyle(.white)
+
+            Text("ยังไม่มีคลิป")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            Text("เปิดแท็บ \"เพิ่ม\" เพื่อเลือกวิดีโอจากเครื่องแล้วอัปโหลดคลิปแรก")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white.opacity(0.7))
         }
         .padding(28)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
@@ -323,5 +289,5 @@ struct VideoFeedView: View {
 }
 
 #Preview {
-    VideoFeedView()
+    VideoFeedView(store: FeedStore(), focusPostID: .constant(nil))
 }
