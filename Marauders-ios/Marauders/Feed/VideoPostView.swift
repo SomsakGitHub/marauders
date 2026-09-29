@@ -29,6 +29,8 @@ struct VideoPostView: View {
     @State private var statusObservation: NSKeyValueObservation?
     @State private var failureToken: (any NSObjectProtocol)?
 
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -59,6 +61,11 @@ struct VideoPostView: View {
             unbindPlayer()
         }
         .onChange(of: isActive) { _, _ in
+            syncPlayback()
+        }
+        .onChange(of: scenePhase) { _, _ in
+            // Coming back from the background has to re-issue the play, because the pool paused
+            // every player on the way out and nothing else is holding the intent.
             syncPlayback()
         }
     }

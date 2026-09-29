@@ -18,6 +18,8 @@ struct VideoFeedView: View {
     @State private var failedIDs: Set<String> = []
     @State private var isExhausted = false
 
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -108,8 +110,20 @@ struct VideoFeedView: View {
             }
             syncPlaybackWindow()
         }
-        .onDisappear {
-            AudioSessionController.shared.deactivate()
+        .onChange(of: scenePhase) { _, phase in
+            // The feed outlives the tab bar now, so the app going away is the only thing left that
+            // should take the audio session back. Releasing it on tab switches is what used to
+            // stop a clip mid sentence.
+            switch phase {
+            case .active:
+                AudioSessionController.shared.activate()
+                syncPlaybackWindow()
+            case .inactive, .background:
+                pool.pauseAll(except: nil)
+                AudioSessionController.shared.deactivate()
+            @unknown default:
+                break
+            }
         }
     }
 
@@ -124,7 +138,7 @@ struct VideoFeedView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
-        .padding(.bottom, 92)
+        .padding(.bottom, 96)
     }
 
     private var exhaustedCard: some View {
