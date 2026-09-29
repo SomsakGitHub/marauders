@@ -11,7 +11,6 @@ struct VideoFeedView: View {
     @State private var store = FeedStore()
     @State private var pool = PlayerPool()
     @State private var currentID: String?
-    @State private var isMuted = false
 
     var body: some View {
         ZStack {
@@ -43,9 +42,6 @@ struct VideoFeedView: View {
             syncPlaybackWindow()
             Task { await store.loadMore(after: id) }
         }
-        .onChange(of: isMuted) { _, muted in
-            pool.setMuted(muted)
-        }
         .sensoryFeedback(.selection, trigger: currentID)
     }
 
@@ -56,9 +52,7 @@ struct VideoFeedView: View {
                     VideoPostView(
                         post: post,
                         isActive: post.id == currentID,
-                        isMuted: isMuted,
-                        pool: pool,
-                        onToggleMute: { isMuted.toggle() }
+                        pool: pool
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .containerRelativeFrame(.vertical)
@@ -77,7 +71,6 @@ struct VideoFeedView: View {
         .ignoresSafeArea()
         .onAppear {
             AudioSessionController.shared.activate()
-            pool.setMuted(isMuted)
             if currentID == nil {
                 currentID = store.posts.first?.id
             }

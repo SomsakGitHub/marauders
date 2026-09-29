@@ -16,12 +16,13 @@ tab bar; a clip fills the screen and the only chrome is what playback itself nee
 - Landscape clips are shown whole, floating over a blurred, dimmed copy of themselves so a
   16:9 video fills a 19.5:9 screen instead of being cropped to its middle 46 percent
 - Tap anywhere to pause, with a play glyph while paused
-- One mute control for the whole feed, owned by the player pool so it survives scrolling and
-  reaches clips that are preloaded after the tap
 - Pooled `AVPlayer` instances that preload the neighbouring clips and loop seamlessly
 - Buffering spinner, per-clip failure card with retry, and a feed level error state
 - Cursor based pagination that prefetches as the tail comes into view, plus an end of feed marker
-- `AVAudioSession` configured for movie playback, with interruption and route change handling
+- `AVAudioSession` on `.ambient` with `.mixWithOthers`: there is no mute button, so the
+  hardware silent switch has to keep working and a clip must never stop other audio.
+  The mode is `.default`, not `.moviePlayback`, which `AVAudioSession` only accepts alongside
+  the `.playback` category. `PlayerPool` still handles interruptions and route changes
 
 The API already carries likes, saves and comments, and `FeedStore` implements the optimistic
 reaction flow, but none of it is on screen yet: playback is the thing being tuned first.

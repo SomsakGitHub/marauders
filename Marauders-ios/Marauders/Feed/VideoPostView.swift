@@ -17,9 +17,7 @@ enum PlaybackLoadState: Equatable {
 struct VideoPostView: View {
     let post: VideoPost
     let isActive: Bool
-    let isMuted: Bool
     let pool: PlayerPool
-    let onToggleMute: () -> Void
 
     @State private var player: AVPlayer?
     @State private var loadState: PlaybackLoadState = .loading
@@ -49,16 +47,6 @@ struct VideoPostView: View {
                     .shadow(radius: 12)
                     .transition(.scale.combined(with: .opacity))
             }
-
-            VStack {
-                HStack {
-                    Spacer()
-                    muteButton
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
         }
         .contentShape(Rectangle())
         .gesture(tapGesture)
@@ -71,21 +59,6 @@ struct VideoPostView: View {
         .onChange(of: isActive) { _, _ in
             syncPlayback()
         }
-    }
-
-    private var muteButton: some View {
-        Button {
-            onToggleMute()
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        } label: {
-            Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 36, height: 36)
-                .background(.ultraThinMaterial, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(isMuted ? "เปิดเสียง" : "ปิดเสียง")
     }
 
     @ViewBuilder
@@ -229,9 +202,7 @@ struct VideoPostView: View {
     VideoPostView(
         post: VideoPost.samples[0],
         isActive: true,
-        isMuted: false,
-        pool: PlayerPool(),
-        onToggleMute: {}
+        pool: PlayerPool()
     )
     .ignoresSafeArea()
 }

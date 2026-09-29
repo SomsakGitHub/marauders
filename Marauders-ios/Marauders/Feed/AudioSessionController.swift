@@ -7,20 +7,34 @@
 
 import AVFoundation
 import Foundation
+import os
 
 final class AudioSessionController {
     static let shared = AudioSessionController()
 
     private let session = AVAudioSession.sharedInstance()
+    private let log = Logger(subsystem: "com.somsak.Marauders", category: "AudioSession")
 
     private init() {}
 
+    /// There is no in-app mute control, so the session has to stay out of the way:
+    /// `.ambient` keeps the hardware silent switch working and `.mixWithOthers` means a clip
+    /// never stops whatever the user was already listening to.
+    ///
+    /// The mode is `.default` on purpose: `.moviePlayback` is only legal with the `.playback`
+    /// category and pairing it with `.ambient` fails with `OSStatus -50`.
+    func configure() throws {
+        try session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+        try session.setActive(true)
+    }
+
     func activate() {
         do {
-            try session.setCategory(.playback, mode: .moviePlayback, options: [])
-            try session.setActive(true)
+            try configure()
         } catch {
-            assertionFailure("Audio session activation failed: \(error.localizedDescription)")
+            // Audio is not worth losing the feed over: a session we cannot claim just means the
+            // clips stay silent, and the OS will hand it back once the conflict clears.
+            log.error("Audio session activation failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -28,7 +42,7 @@ final class AudioSessionController {
         do {
             try session.setActive(false, options: [.notifyOthersOnDeactivation])
         } catch {
-            assertionFailure("Audio session deactivation failed: \(error.localizedDescription)")
+            log.error("Audio session deactivation failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 }
