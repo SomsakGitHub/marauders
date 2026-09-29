@@ -104,7 +104,7 @@ extension VideoPost {
         ),
         VideoPost(
             id: "common-room",
-            videoURL: URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/adv_example_hevc/main.m3u8")!,
+            videoURL: URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!,
             author: PostAuthor(
                 id: "hermione",
                 handle: "@hermione",
@@ -121,7 +121,7 @@ extension VideoPost {
         ),
         VideoPost(
             id: "diagon-alley",
-            videoURL: URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_adv_example_ts/master.m3u8")!,
+            videoURL: URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/adv_dv_atmos/main.m3u8")!,
             author: PostAuthor(
                 id: "harry",
                 handle: "@harry",

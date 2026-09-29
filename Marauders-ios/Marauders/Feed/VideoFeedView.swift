@@ -11,6 +11,8 @@ struct VideoFeedView: View {
     @State private var store = FeedStore()
     @State private var pool = PlayerPool()
     @State private var currentID: String?
+    @State private var failedIDs: Set<String> = []
+    @State private var isExhausted = false
 
     var body: some View {
         ZStack {
@@ -29,6 +31,10 @@ struct VideoFeedView: View {
                 feed
             }
 
+            if isExhausted, store.phase == .loaded {
+                exhaustedCard
+            }
+
             if let message = store.actionError {
                 actionErrorToast(message)
             }
@@ -42,6 +48,12 @@ struct VideoFeedView: View {
             syncPlaybackWindow()
             Task { await store.loadMore(after: id) }
         }
+        .onChange(of: store.phase) { _, phase in
+            if phase == .loaded {
+                failedIDs = []
+                isExhausted = false
+            }
+        }
         .sensoryFeedback(.selection, trigger: currentID)
     }
 
@@ -52,7 +64,8 @@ struct VideoFeedView: View {
                     VideoPostView(
                         post: post,
                         isActive: post.id == currentID,
-                        pool: pool
+                        pool: pool,
+                        onLoadFailed: { handleLoadFailure(of: post.id) }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .containerRelativeFrame(.vertical)
@@ -93,6 +106,40 @@ struct VideoFeedView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
         .padding(.bottom, 92)
+    }
+
+    private var exhaustedCard: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "film.stack")
+                .font(.system(size: 40))
+                .foregroundStyle(.white)
+
+            Text("ไม่มีคลิปที่เล่นได้")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            Text("คลิปที่เหลือในฟีดนี้โหลดไม่ผ่าน")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white.opacity(0.7))
+
+            Button {
+                failedIDs = []
+                isExhausted = false
+                store.retry()
+            } label: {
+                Label("ลองใหม่", systemImage: "arrow.clockwise")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(.white, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(28)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .padding(.horizontal, 36)
     }
 
     private func feedErrorCard(_ message: String) -> some View {
@@ -159,6 +206,44 @@ struct VideoFeedView: View {
         let upper = min(index + 1, store.posts.count - 1)
         pool.warm(Array(store.posts[lower...upper]))
         pool.activate(store.posts[index])
+    }
+
+    /// A clip that cannot play is skipped rather than shown. Preloaded clips report in ahead of
+    /// time, so a failure on an inactive post is only remembered here; the jump happens when it
+    /// is the one being watched.
+    private func handleLoadFailure(of postID: String) {
+        failedIDs.insert(postID)
+        guard postID == currentID, !isExhausted else { return }
+        skip(after: postID)
+    }
+
+    private func skip(after postID: String) {
+        if let next = nextPlayable(after: postID) {
+            isExhausted = false
+            currentID = next
+            return
+        }
+
+        // The failure landed on the last loaded post, so the page boundary may be hiding more
+        // clips. Pull the next page before deciding the feed is done.
+        guard store.hasMore else {
+            isExhausted = true
+            return
+        }
+
+        Task {
+            await store.loadMore(after: postID)
+            if let next = nextPlayable(after: postID) {
+                isExhausted = false
+                currentID = next
+            } else {
+                isExhausted = true
+            }
+        }
+    }
+
+    private func nextPlayable(after postID: String) -> String? {
+        PlaybackSkipper.next(after: postID, in: store.posts.map(\.id), skipping: failedIDs)
     }
 }
 

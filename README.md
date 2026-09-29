@@ -17,7 +17,10 @@ tab bar; a clip fills the screen and the only chrome is what playback itself nee
   16:9 video fills a 19.5:9 screen instead of being cropped to its middle 46 percent
 - Tap anywhere to pause, with a play glyph while paused
 - Pooled `AVPlayer` instances that preload the neighbouring clips and loop seamlessly
-- Buffering spinner, per-clip failure card with retry, and a feed level error state
+- Buffering spinner and a feed level error state
+- A clip that cannot play is skipped instead of shown: the feed jumps to the next playable post,
+  pulling another page first if the failure landed on the tail. The failure card stays for
+  anyone who scrolls back to a dead post on purpose
 - Cursor based pagination that prefetches as the tail comes into view, plus an end of feed marker
 - `AVAudioSession` on `.ambient` with `.mixWithOthers`: there is no mute button, so the
   hardware silent switch has to keep working and a clip must never stop other audio.
@@ -26,6 +29,10 @@ tab bar; a clip fills the screen and the only chrome is what playback itself nee
 
 The API already carries likes, saves and comments, and `FeedStore` implements the optimistic
 reaction flow, but none of it is on screen yet: playback is the thing being tuned first.
+
+Every seeded post points at a stream that has been verified to actually decode. Two of the
+five Apple sample streams that were in use fail with `CoreMediaErrorDomain -16044`, which is
+why the feed was skipping its own first post on launch.
 
 ## Architecture
 

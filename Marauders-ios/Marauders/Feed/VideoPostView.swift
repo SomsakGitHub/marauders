@@ -18,10 +18,12 @@ struct VideoPostView: View {
     let post: VideoPost
     let isActive: Bool
     let pool: PlayerPool
+    let onLoadFailed: () -> Void
 
     @State private var player: AVPlayer?
     @State private var loadState: PlaybackLoadState = .loading
     @State private var isUserPaused = false
+    @State private var hasReportedFailure = false
 
     @State private var timeToken: Any?
     @State private var statusObservation: NSKeyValueObservation?
@@ -134,6 +136,7 @@ struct VideoPostView: View {
         guard player == nil, let bound = pool.attach(to: post) else { return }
         player = bound
         loadState = .loading
+        hasReportedFailure = false
         observeItem(of: bound)
         syncPlayback()
     }
@@ -175,6 +178,9 @@ struct VideoPostView: View {
             }
             Task { @MainActor in
                 loadState = state
+                if case .failed = state {
+                    reportFailure()
+                }
             }
         }
 
@@ -185,8 +191,17 @@ struct VideoPostView: View {
         ) { [weak bound] note in
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             loadState = .failed(error?.localizedDescription ?? "เล่นวิดีโอไม่สำเร็จ")
+            reportFailure()
             bound?.pause()
         }
+    }
+
+    /// Reports a broken clip once per attempt so the feed can move on instead of parking the
+    /// viewer here. The error card stays for anyone who scrolls back to a dead post on purpose.
+    private func reportFailure() {
+        guard !hasReportedFailure else { return }
+        hasReportedFailure = true
+        onLoadFailed()
     }
 
     private func retry() {
@@ -202,7 +217,8 @@ struct VideoPostView: View {
     VideoPostView(
         post: VideoPost.samples[0],
         isActive: true,
-        pool: PlayerPool()
+        pool: PlayerPool(),
+        onLoadFailed: {}
     )
     .ignoresSafeArea()
 }
