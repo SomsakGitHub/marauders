@@ -8,25 +8,52 @@
 import SwiftUI
 
 struct VideoFeedView: View {
+    @State private var store = FeedStore()
     @State private var pool = PlayerPool()
-    @State private var posts = VideoPost.samples
     @State private var currentID: String?
 
-    private var currentPost: VideoPost? {
-        guard let currentID else { return nil }
-        return posts.first { $0.id == currentID }
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            switch store.phase {
+            case .idle, .loading:
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+
+            case .failed(let message):
+                feedErrorCard(message)
+
+            case .loaded:
+                feed
+            }
+
+            if let message = store.actionError {
+                actionErrorToast(message)
+            }
+        }
+        .task {
+            if case .idle = store.phase {
+                store.loadInitial()
+            }
+        }
+        .onChange(of: currentID) { _, id in
+            syncPlaybackWindow()
+            Task { await store.loadMore(after: id) }
+        }
     }
 
-    var body: some View {
+    private var feed: some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
-                ForEach(posts) { post in
+                ForEach(store.posts) { post in
                     VideoPostView(
                         post: post,
                         isActive: post.id == currentID,
                         pool: pool,
-                        onToggleLike: { toggleLike(post.id) },
-                        onToggleSave: { toggleSave(post.id) }
+                        onToggleLike: { Task { await store.toggleLike(post.id) } },
+                        onToggleSave: { Task { await store.toggleSave(post.id) } }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .containerRelativeFrame(.vertical)
@@ -39,39 +66,82 @@ struct VideoFeedView: View {
         .scrollIndicators(.hidden)
         .scrollPosition(id: $currentID, anchor: .top)
         .ignoresSafeArea()
-        .background(.black)
         .onAppear {
             AudioSessionController.shared.activate()
-            currentID = currentID ?? posts.first?.id
+            if currentID == nil {
+                currentID = store.posts.first?.id
+            }
             syncPlaybackWindow()
         }
         .onDisappear {
             AudioSessionController.shared.deactivate()
         }
-        .onChange(of: currentID) { _, _ in
-            syncPlaybackWindow()
+    }
+
+    private func feedErrorCard(_ message: String) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                .font(.system(size: 40))
+                .foregroundStyle(.white)
+
+            Text("โหลดฟีดไม่สำเร็จ")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            Text(message)
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white.opacity(0.7))
+
+            Button {
+                store.retry()
+            } label: {
+                Label("ลองใหม่", systemImage: "arrow.clockwise")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(.white, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(28)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .padding(.horizontal, 36)
+    }
+
+    private func actionErrorToast(_ message: String) -> some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text(message)
+                    .lineLimit(2)
+            }
+            .font(.caption)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.bottom, 120)
+            .padding(.horizontal, 24)
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .task(id: message) {
+            try? await Task.sleep(for: .seconds(3))
+            withAnimation {
+                store.dismissActionError()
+            }
         }
     }
 
     private func syncPlaybackWindow() {
-        guard let index = posts.firstIndex(where: { $0.id == currentID }) else { return }
+        guard let index = store.posts.firstIndex(where: { $0.id == currentID }) else { return }
 
         let lower = max(index - 1, 0)
-        let upper = min(index + 1, posts.count - 1)
-        pool.warm(Array(posts[lower...upper]))
-        pool.activate(posts[index])
-    }
-
-    private func toggleLike(_ id: String) {
-        guard let index = posts.firstIndex(where: { $0.id == id }) else { return }
-        posts[index].isLiked.toggle()
-        posts[index].likes += posts[index].isLiked ? 1 : -1
-    }
-
-    private func toggleSave(_ id: String) {
-        guard let index = posts.firstIndex(where: { $0.id == id }) else { return }
-        posts[index].isSaved.toggle()
-        posts[index].saves += posts[index].isSaved ? 1 : -1
+        let upper = min(index + 1, store.posts.count - 1)
+        pool.warm(Array(store.posts[lower...upper]))
+        pool.activate(store.posts[index])
     }
 }
 

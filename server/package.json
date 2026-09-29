@@ -1,0 +1,28 @@
+{
+  "name": "marauders-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "node scripts/db.mjs migrate",
+    "db:seed": "node scripts/db.mjs seed",
+    "db:reset": "npm run db:migrate && npm run db:seed"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
+    "hono": "^4.13.11"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260929.0",
+    "@electric-sql/pglite": "^0.5.8",
+    "@types/node": "^26.6.3",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.2",
+    "wrangler": "^4.143.0"
+  }
+}

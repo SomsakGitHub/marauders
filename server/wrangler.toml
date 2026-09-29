@@ -1,0 +1,11 @@
+name = "marauders-api"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+
+[dev]
+port = 8787
+ip = "127.0.0.1"
+
+# DATABASE_URL is a runtime secret and is never committed.
+#   local:  .dev.vars
+#   prod:   npx wrangler secret put DATABASE_URL

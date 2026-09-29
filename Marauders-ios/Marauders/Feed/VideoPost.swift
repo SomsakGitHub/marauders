@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct PostAuthor: Identifiable, Hashable {
+struct PostAuthor: Identifiable, Hashable, Codable {
     let id: String
     let handle: String
     let displayName: String
@@ -15,7 +15,7 @@ struct PostAuthor: Identifiable, Hashable {
     let isVerified: Bool
 }
 
-struct VideoPost: Identifiable, Hashable {
+struct VideoPost: Identifiable, Hashable, Codable {
     let id: String
     let videoURL: URL
     let author: PostAuthor
@@ -27,6 +27,20 @@ struct VideoPost: Identifiable, Hashable {
     var shares: Int
     var isLiked: Bool = false
     var isSaved: Bool = false
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case videoURL = "videoUrl"
+        case author
+        case caption
+        case music
+        case likes
+        case comments
+        case saves
+        case shares
+        case isLiked
+        case isSaved
+    }
 }
 
 extension Int {
