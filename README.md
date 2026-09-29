@@ -5,8 +5,7 @@ Hono, Cloudflare Workers and Neon (Postgres).
 
 The home tab is a vertical, full-screen video feed in the style of TikTok: swipe up
 for the next clip, tap to pause, double tap to like. Likes and saves are written
-through to the API optimistically and are scoped per viewer. A second tab renders a
-live MapKit map with friend locations on top of a Hogwarts-flavoured theme.
+through to the API optimistically and are scoped per viewer.
 
 ## Features
 
@@ -17,14 +16,12 @@ live MapKit map with friend locations on top of a Hogwarts-flavoured theme.
 - Tap to pause, double tap to like with a heart burst, mute toggle, scrubber
 - Buffering spinner, per-clip failure card with retry, and a feed level error state
 - `AVAudioSession` configured for movie playback, with interruption and route change handling
-- MapKit tab with user location, selectable friend annotations and map style switching
 
 ## Architecture
 
 ```mermaid
 flowchart TD
     ContentView --> VideoFeedView
-    ContentView --> MapView
 
     VideoFeedView -->|posts, isActive| VideoPostView
     VideoFeedView -->|loadInitial / loadMore| FeedStore
@@ -151,7 +148,6 @@ Marauders-ios/
   Marauders/
     ContentView.swift            Tab container
     MaraudersApp.swift           App entry point
-    MapView.swift                MapKit tab
     Friend.swift                 Friend model and sample data
     Feed/
       VideoFeedView.swift        Feed states, paging container, prefetch trigger

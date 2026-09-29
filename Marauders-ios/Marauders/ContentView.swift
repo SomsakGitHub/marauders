@@ -14,11 +14,6 @@ struct ContentView: View {
                 .tabItem {
                     Label("Home", systemImage: "play.rectangle.fill")
                 }
-
-            MapView()
-                .tabItem {
-                    Label("Map", systemImage: "map.fill")
-                }
         }
     }
 }
