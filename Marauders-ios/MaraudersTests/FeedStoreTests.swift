@@ -338,6 +338,54 @@ struct FeedStoreTests {
         #expect(store.uploadState == .idle)
     }
 
+    @Test("an empty feed loads without inventing a post")
+    func emptyFeedIsLoadedNotFailed() async throws {
+        let client = StubURLProtocol.makeClient { _ in
+            StubURLProtocol.Response(status: 200, json: #"{ "items": [], "nextCursor": null }"#)
+        }
+        let store = FeedStore(client: client, pageSize: 2)
+
+        await store.loadInitial().value
+
+        #expect(store.phase == .loaded)
+        #expect(store.posts.isEmpty)
+        #expect(store.hasMore == false)
+        #expect(store.actionError == nil)
+    }
+
+    @Test("publishing into an empty feed is the first and only post")
+    func publishIntoEmptyFeed() async throws {
+        let clipURL = try #require(makeTemporaryClip(bytes: Data([0x00, 0x01])))
+        defer { try? FileManager.default.removeItem(at: clipURL) }
+
+        let client = StubURLProtocol.makeClient { request in
+            switch request.url?.path {
+            case "/api/videos":
+                return .init(
+                    status: 201,
+                    json: #"{"key":"videos/first.mp4","url":"/api/videos/first.mp4","size":2}"#
+                )
+            case "/api/posts":
+                return .init(status: 201, json: postJSON(id: "first", likes: 0))
+            default:
+                return .init(status: 200, json: #"{ "items": [], "nextCursor": null }"#)
+            }
+        }
+        let store = FeedStore(client: client, pageSize: 2)
+        await store.loadInitial().value
+
+        let newID = await store.publish(
+            clipURL: clipURL,
+            filename: "clip.mp4",
+            contentType: "video/mp4",
+            caption: ""
+        )
+
+        #expect(newID == "first")
+        #expect(store.posts.map(\.id) == ["first"])
+        #expect(store.phase == .loaded)
+    }
+
     @Test("the rail button still toggles a like off")
     func toggleUnlikeStillWorks() async throws {
         let client = StubURLProtocol.makeClient { request in

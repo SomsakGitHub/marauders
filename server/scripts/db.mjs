@@ -84,13 +84,41 @@ const run = async (file) => {
   process.stdout.write(`${file}: done\n`);
 };
 
+/**
+ * Empties the feed without touching the schema.
+ *
+ * CASCADE clears the reaction rows along with the posts, and RESTART IDENTITY puts the paging
+ * cursor back to 1 so the first clip uploaded afterwards becomes the newest post. Uploaded
+ * clips in R2 are left alone: they are removed separately, since the objects are addressed by
+ * key rather than by post.
+ */
+const truncate = async () => {
+  const sql = neon(await databaseUrl());
+
+  const count = async (table) =>
+    (await sql.query(`SELECT COUNT(*)::int AS n FROM ${table}`))[0].n;
+
+  const before = {};
+  for (const table of ['posts', 'post_likes', 'post_saves']) {
+    before[table] = await count(table);
+  }
+
+  await sql.query('TRUNCATE posts, post_likes, post_saves RESTART IDENTITY CASCADE');
+
+  for (const table of ['posts', 'post_likes', 'post_saves']) {
+    process.stdout.write(`${table}: ${before[table]} -> ${await count(table)}\n`);
+  }
+};
+
 const [command, file] = process.argv.slice(2);
 
 if (command === 'migrate') {
   await run('migrations/0001_init.sql');
 } else if (command === 'seed') {
   await run('seed.sql');
+} else if (command === 'truncate') {
+  await truncate();
 } else {
-  process.stderr.write('usage: node scripts/db.mjs <migrate|seed>\n');
+  process.stderr.write('usage: node scripts/db.mjs <migrate|seed|truncate>\n');
   process.exit(1);
 }
