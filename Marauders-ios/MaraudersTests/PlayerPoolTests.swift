@@ -99,15 +99,24 @@ struct PlayerPoolTests {
         #expect(pool.cachedPlayer(for: post.videoURL) == nil)
     }
 
-    @Test("mute state is forwarded to the cached player")
+    @Test("mute applies to every cached player and to players created later")
     func muteIsForwarded() throws {
         let pool = PlayerPool(capacity: 3)
-        let post = makePost("a")
-        let player = try #require(pool.attach(to: post))
+        let first = makePost("a")
+        let second = makePost("b")
+        let firstPlayer = try #require(pool.attach(to: first))
 
-        pool.setMuted(true, for: post)
+        pool.setMuted(true)
+        let secondPlayer = try #require(pool.attach(to: second))
 
-        #expect(player.isMuted)
+        #expect(firstPlayer.isMuted)
+        #expect(secondPlayer.isMuted)
+        #expect(pool.isMuted)
+
+        pool.setMuted(false)
+
+        #expect(!firstPlayer.isMuted)
+        #expect(!secondPlayer.isMuted)
     }
 }
 

@@ -13,16 +13,21 @@ final class PlayerPool {
     private var accessOrder: [URL] = []
     private var pinned: Set<URL> = []
     private var loopTokens: [URL: any NSObjectProtocol] = [:]
+    private var sessionTokens: [any NSObjectProtocol] = []
     private var activeURL: URL?
     private let capacity: Int
+    private(set) var isMuted = false
 
-    init(capacity: Int = 3) {
+    init(capacity: Int = 4) {
         self.capacity = capacity
         observeSessionEvents()
     }
 
     deinit {
         for token in loopTokens.values {
+            NotificationCenter.default.removeObserver(token)
+        }
+        for token in sessionTokens {
             NotificationCenter.default.removeObserver(token)
         }
     }
@@ -55,8 +60,11 @@ final class PlayerPool {
         release(post.videoURL)
     }
 
-    func setMuted(_ isMuted: Bool, for post: VideoPost) {
-        players[post.videoURL]?.isMuted = isMuted
+    func setMuted(_ muted: Bool) {
+        isMuted = muted
+        for player in players.values {
+            player.isMuted = muted
+        }
     }
 
     func cachedPlayer(for url: URL) -> AVPlayer? {
@@ -82,6 +90,7 @@ final class PlayerPool {
         let player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .none
         player.automaticallyWaitsToMinimizeStalling = true
+        player.isMuted = isMuted
 
         players[post.videoURL] = player
         accessOrder.append(post.videoURL)
@@ -132,7 +141,7 @@ final class PlayerPool {
     private func observeSessionEvents() {
         let center = NotificationCenter.default
 
-        center.addObserver(
+        let interruption = center.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: nil,
             queue: .main
@@ -159,7 +168,7 @@ final class PlayerPool {
             }
         }
 
-        center.addObserver(
+        let routeChange = center.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main
@@ -175,5 +184,7 @@ final class PlayerPool {
                 self.players[activeURL]?.pause()
             }
         }
+
+        sessionTokens = [interruption, routeChange]
     }
 }

@@ -227,4 +227,50 @@ struct FeedStoreTests {
         store.dismissActionError()
         #expect(store.actionError == nil)
     }
+
+    @Test("double tap likes without ever unliking, and skips the request when already liked")
+    func likeIsNotAToggle() async throws {
+        let client = StubURLProtocol.makeClient { request in
+            if request.url?.path.hasSuffix("/like") == true {
+                return .init(
+                    status: 200,
+                    json: #"{"id":"a","likes":11,"saves":0,"isLiked":true,"isSaved":false}"#
+                )
+            }
+            return .init(status: 200, json: pageJSON(ids: ["a"], nextCursor: nil))
+        }
+        let store = FeedStore(client: client, pageSize: 1)
+
+        await store.loadInitial().value
+        await store.like("a")
+        await store.like("a")
+        await store.like("a")
+
+        #expect(store.posts[0].isLiked)
+        #expect(store.posts[0].likes == 11)
+
+        let likeRequests = StubURLProtocol.recordedPaths.filter { $0 == "/api/posts/a/like" }
+        #expect(likeRequests.count == 1)
+    }
+
+    @Test("the rail button still toggles a like off")
+    func toggleUnlikeStillWorks() async throws {
+        let client = StubURLProtocol.makeClient { request in
+            if request.url?.path.hasSuffix("/like") == true {
+                return .init(
+                    status: 200,
+                    json: #"{"id":"a","likes":9,"saves":0,"isLiked":false,"isSaved":false}"#
+                )
+            }
+            return .init(status: 200, json: pageJSON(ids: ["a"], nextCursor: nil))
+        }
+        let store = FeedStore(client: client, pageSize: 1)
+
+        await store.loadInitial().value
+        await store.like("a")
+        await store.toggleLike("a")
+
+        #expect(store.posts[0].isLiked == false)
+        #expect(store.posts[0].likes == 9)
+    }
 }

@@ -11,6 +11,7 @@ struct VideoFeedView: View {
     @State private var store = FeedStore()
     @State private var pool = PlayerPool()
     @State private var currentID: String?
+    @State private var isMuted = false
 
     var body: some View {
         ZStack {
@@ -42,6 +43,10 @@ struct VideoFeedView: View {
             syncPlaybackWindow()
             Task { await store.loadMore(after: id) }
         }
+        .onChange(of: isMuted) { _, muted in
+            pool.setMuted(muted)
+        }
+        .sensoryFeedback(.selection, trigger: currentID)
     }
 
     private var feed: some View {
@@ -51,9 +56,9 @@ struct VideoFeedView: View {
                     VideoPostView(
                         post: post,
                         isActive: post.id == currentID,
+                        isMuted: isMuted,
                         pool: pool,
-                        onToggleLike: { Task { await store.toggleLike(post.id) } },
-                        onToggleSave: { Task { await store.toggleSave(post.id) } }
+                        onToggleMute: { isMuted.toggle() }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .containerRelativeFrame(.vertical)
@@ -61,6 +66,10 @@ struct VideoFeedView: View {
                 }
             }
             .scrollTargetLayout()
+
+            if !store.hasMore, !store.posts.isEmpty {
+                endOfFeedMarker
+            }
         }
         .scrollTargetBehavior(.paging)
         .scrollIndicators(.hidden)
@@ -68,6 +77,7 @@ struct VideoFeedView: View {
         .ignoresSafeArea()
         .onAppear {
             AudioSessionController.shared.activate()
+            pool.setMuted(isMuted)
             if currentID == nil {
                 currentID = store.posts.first?.id
             }
@@ -76,6 +86,20 @@ struct VideoFeedView: View {
         .onDisappear {
             AudioSessionController.shared.deactivate()
         }
+    }
+
+    private var endOfFeedMarker: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(.white.opacity(0.8))
+            Text("ดูครบทุกคลิปแล้ว")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 60)
+        .padding(.bottom, 92)
     }
 
     private func feedErrorCard(_ message: String) -> some View {

@@ -9,13 +9,22 @@ through to the API optimistically and are scoped per viewer.
 
 ## Features
 
-- Vertical paging feed with one video per screen, snapping to the next clip
-- Cursor based pagination that prefetches as the tail comes into view
-- Optimistic like and save with rollback when the API rejects the change
-- Pooled `AVPlayer` instances that preload neighbouring clips and loop seamlessly
-- Tap to pause, double tap to like with a heart burst, mute toggle, scrubber
+The home screen is the video and nothing else. There is no caption, no action rail and no
+tab bar; a clip fills the screen and the only chrome is what playback itself needs.
+
+- Full bleed vertical paging, one clip per screen, snapping to the next
+- Landscape clips are shown whole, floating over a blurred, dimmed copy of themselves so a
+  16:9 video fills a 19.5:9 screen instead of being cropped to its middle 46 percent
+- Tap anywhere to pause, with a play glyph while paused
+- One mute control for the whole feed, owned by the player pool so it survives scrolling and
+  reaches clips that are preloaded after the tap
+- Pooled `AVPlayer` instances that preload the neighbouring clips and loop seamlessly
 - Buffering spinner, per-clip failure card with retry, and a feed level error state
+- Cursor based pagination that prefetches as the tail comes into view, plus an end of feed marker
 - `AVAudioSession` configured for movie playback, with interruption and route change handling
+
+The API already carries likes, saves and comments, and `FeedStore` implements the optimistic
+reaction flow, but none of it is on screen yet: playback is the thing being tuned first.
 
 ## Architecture
 
@@ -46,11 +55,12 @@ flowchart TD
 | Layer | Type | Responsibility |
 | --- | --- | --- |
 | `VideoFeedView` | View | Owns the feed state, decides which post is active, preloads a window of three |
-| `VideoPostView` | View | Renders one post and translates player callbacks into loading, error and progress UI |
+| `VideoPostView` | View | One clip: the player surface, tap to pause, and the loading and failure states |
 | `FeedStore` | `@Observable` class | Feed state machine: phases, cursor, optimistic reactions and rollback |
 | `FeedAPIClient` | Struct | Typed `URLSession` calls, viewer identity and error mapping |
 | `PlayerPool` | Plain class | Owns every `AVPlayer`, keyed by URL, with LRU eviction and pin protection |
-| `VideoPlayerSurface` | `UIViewRepresentable` | Bridges `AVPlayer` into a view through a custom `AVPlayerLayer` host |
+| `VideoPlayerSurface` | `UIViewRepresentable` | Bridges `AVPlayer` into a view through a custom `AVPlayerLayer` host, with a selectable `videoGravity` |
+| `AmbientVideoBackdrop` | `UIViewRepresentable` | Second `AVPlayerLayer` at `.resizeAspectFill` under a `UIVisualEffectView`, used as the blurred backdrop behind a letterboxed clip |
 | `AudioSessionController` | Plain class | Single place that configures the shared `AVAudioSession` |
 | `repository.ts` | Module | Postgres queries: feed paging, reaction upserts, cursor encoding |
 | `neon.ts` | Module | Adapts the Neon HTTP driver to the narrow `SqlClient` the repository talks to |
@@ -109,7 +119,9 @@ state change hops to the main actor before touching `@State`.
 **Reactions are idempotent per viewer, not toggles.** `POST` means "I like this" and `DELETE`
 means "I do not", keyed by `X-Viewer-Id`. Replaying a request cannot double count, which is
 what makes the optimistic client safe to retry. The response carries the authoritative
-counters so the client never has to increment locally after the round trip.
+counters so the client never has to increment locally after the round trip. The client keeps
+the same split: an explicit "I like this" is dropped when the post is already liked, so
+firing it twice can never unlike something.
 
 **Rollback over reconciliation on failure.** A rejected like is restored to the snapshot
 taken before the optimistic write, so a dropped connection cannot leave the UI showing a
@@ -151,8 +163,8 @@ Marauders-ios/
     Friend.swift                 Friend model and sample data
     Feed/
       VideoFeedView.swift        Feed states, paging container, prefetch trigger
-      VideoPostView.swift        One post: gestures, overlays, error UI
-      VideoPlayerSurface.swift   AVPlayerLayer bridge
+      VideoPostView.swift        One clip: player surface, tap to pause, error UI
+      VideoPlayerSurface.swift   AVPlayerLayer bridge and the blurred backdrop
       PlayerPool.swift           Player cache, eviction, session events
       AudioSessionController.swift
       FeedStore.swift            Feed state machine and optimistic reactions

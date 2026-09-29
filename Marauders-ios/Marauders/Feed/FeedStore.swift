@@ -96,13 +96,23 @@ final class FeedStore {
         loadTask = nil
         loadInitial()
     }
+
     func toggleLike(_ postID: String) async {
         guard let index = posts.firstIndex(where: { $0.id == postID }) else { return }
+        await setLiked(!posts[index].isLiked, postID: postID)
+    }
+
+    func like(_ postID: String) async {
+        await setLiked(true, postID: postID)
+    }
+
+    func setLiked(_ desired: Bool, postID: String) async {
+        guard let index = posts.firstIndex(where: { $0.id == postID }) else { return }
+        guard posts[index].isLiked != desired else { return }
 
         let previous = posts[index]
-        posts[index].isLiked.toggle()
-        posts[index].likes += posts[index].isLiked ? 1 : -1
-        let desired = posts[index].isLiked
+        posts[index].isLiked = desired
+        posts[index].likes += desired ? 1 : -1
 
         do {
             apply(try await client.setLiked(desired, postId: postID))
@@ -114,11 +124,16 @@ final class FeedStore {
 
     func toggleSave(_ postID: String) async {
         guard let index = posts.firstIndex(where: { $0.id == postID }) else { return }
+        await setSaved(!posts[index].isSaved, postID: postID)
+    }
+
+    func setSaved(_ desired: Bool, postID: String) async {
+        guard let index = posts.firstIndex(where: { $0.id == postID }) else { return }
+        guard posts[index].isSaved != desired else { return }
 
         let previous = posts[index]
-        posts[index].isSaved.toggle()
-        posts[index].saves += posts[index].isSaved ? 1 : -1
-        let desired = posts[index].isSaved
+        posts[index].isSaved = desired
+        posts[index].saves += desired ? 1 : -1
 
         do {
             apply(try await client.setSaved(desired, postId: postID))
