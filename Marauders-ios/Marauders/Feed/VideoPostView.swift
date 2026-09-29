@@ -19,10 +19,17 @@ struct VideoPostView: View {
     let isActive: Bool
     let pool: PlayerPool
     let onLoadFailed: () -> Void
+    /// False while another tab covers the feed. The player stays alive so the clip is not
+    /// reloaded, but nothing is allowed to make noise from behind an opaque screen.
+    var isVisible = true
 
     @State private var player: AVPlayer?
     @State private var loadState: PlaybackLoadState = .loading
     @State private var isUserPaused = false
+    /// Press and hold. Kept apart from `isUserPaused` because a hold never shows the play glyph
+    /// and never survives the release.
+    @State private var isHolding = false
+    @State private var progress: Double = 0
     @State private var hasReportedFailure = false
 
     @State private var timeToken: Any?
@@ -44,23 +51,38 @@ struct VideoPostView: View {
 
             statusOverlay
 
-            if isUserPaused && isActive {
+            if intent.showsPlayGlyph {
                 Image(systemName: "play.fill")
                     .font(.system(size: 64, weight: .bold))
                     .foregroundStyle(.white)
                     .shadow(radius: 12)
                     .transition(.scale.combined(with: .opacity))
             }
+
+            if intent.showsProgress {
+                progressBar
+            }
         }
         .contentShape(Rectangle())
         .gesture(tapGesture)
+        .onLongPressGesture(minimumDuration: 0.35, perform: {}, onPressingChanged: { pressing in
+            handlePress(pressing)
+        })
         .onAppear {
             bindPlayer()
         }
         .onDisappear {
             unbindPlayer()
         }
-        .onChange(of: isActive) { _, _ in
+        .onChange(of: isActive) { _, nowActive in
+            // Coming back to a clip resumes it. Without this a pause survives the trip away and
+            // the viewer returns to a still frame with a play glyph on it.
+            if nowActive {
+                isUserPaused = false
+            }
+            syncPlayback()
+        }
+        .onChange(of: isVisible) { _, _ in
             syncPlayback()
         }
         .onChange(of: scenePhase) { _, _ in
@@ -68,6 +90,27 @@ struct VideoPostView: View {
             // every player on the way out and nothing else is holding the intent.
             syncPlayback()
         }
+    }
+
+    /// A hairline at the foot of the frame, the way TikTok reports where you are in a clip
+    /// without putting a control bar on screen.
+    private var progressBar: some View {
+        VStack {
+            Spacer(minLength: 0)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(.white.opacity(0.22))
+                    Rectangle()
+                        .fill(.white.opacity(0.85))
+                        .frame(width: max(proxy.size.width * progress, 0))
+                }
+            }
+            .frame(height: 2)
+        }
+        .padding(.bottom, 96)
+        .allowsHitTesting(false)
+        .animation(.linear(duration: 0.1), value: progress)
     }
 
     @ViewBuilder
@@ -124,15 +167,37 @@ struct VideoPostView: View {
     }
 
     private func togglePlayback() {
-        guard isActive else { return }
+        guard isActive, isVisible else { return }
         isUserPaused.toggle()
         syncPlayback()
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
     }
 
+    /// A tap and a hold have to be told apart, or a long press would also flip the paused state
+    /// on the way up and the clip would end up running after the finger lifts.
+    private func handlePress(_ pressing: Bool) {
+        guard isActive, isVisible else { return }
+        isHolding = pressing
+        if pressing {
+            isUserPaused = false
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+        syncPlayback()
+    }
+
+    private var intent: PlaybackIntent {
+        PlaybackIntent(
+            isActivePost: isActive,
+            isPausedByUser: isUserPaused,
+            isHeld: isHolding,
+            isFeedVisible: isVisible,
+            isAppActive: scenePhase == .active
+        )
+    }
+
     private func syncPlayback() {
         guard let player else { return }
-        if isActive && !isUserPaused {
+        if intent.shouldPlay {
             player.play()
         } else {
             player.pause()
@@ -144,7 +209,9 @@ struct VideoPostView: View {
         player = bound
         loadState = .loading
         hasReportedFailure = false
+        progress = 0
         observeItem(of: bound)
+        observeProgress(of: bound)
         syncPlayback()
     }
 
@@ -164,6 +231,7 @@ struct VideoPostView: View {
         pool.detach(from: post)
         player?.pause()
         player = nil
+        progress = 0
     }
 
     private func observeItem(of bound: AVPlayer) {
@@ -203,6 +271,31 @@ struct VideoPostView: View {
         }
     }
 
+    /// Samples the playhead so the progress hairline can move. This observer is what the
+    /// pre-existing teardown in `unbindPlayer` was already cleaning up for.
+    private func observeProgress(of bound: AVPlayer) {
+        let token = bound.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
+            queue: .main
+        ) { [weak bound] _ in
+            guard
+                let bound,
+                let duration = bound.currentItem?.duration,
+                duration.isNumeric,
+                duration.seconds.isFinite,
+                duration.seconds > 0
+            else { return }
+
+            let elapsed = bound.currentTime().seconds
+            guard elapsed.isFinite else { return }
+
+            Task { @MainActor in
+                progress = min(max(elapsed / duration.seconds, 0), 1)
+            }
+        }
+        timeToken = token
+    }
+
     /// Reports a broken clip once per attempt so the feed can move on instead of parking the
     /// viewer here. The error card stays for anyone who scrolls back to a dead post on purpose.
     private func reportFailure() {
@@ -216,6 +309,7 @@ struct VideoPostView: View {
         pool.invalidate(post)
         loadState = .loading
         isUserPaused = false
+        isHolding = false
         bindPlayer()
     }
 }

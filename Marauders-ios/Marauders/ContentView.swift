@@ -24,7 +24,11 @@ struct ContentView: View {
     /// running while you sit on the other tab, and keeping both views alive is what buys that.
     var body: some View {
         ZStack {
-            VideoFeedView(store: store, focusPostID: $focusPostID)
+            VideoFeedView(
+                store: store,
+                focusPostID: $focusPostID,
+                isVisible: selection == .home
+            )
 
             UploadView(store: store) { newID in
                 // Publish into the shared store, then bring the feed forward on the new post.

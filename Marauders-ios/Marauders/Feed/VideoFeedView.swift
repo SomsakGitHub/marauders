@@ -12,6 +12,9 @@ struct VideoFeedView: View {
     let store: FeedStore
     /// Set when a post is published from another tab, which scrolls the feed to it.
     @Binding var focusPostID: String?
+    /// False while the upload tab covers the feed. The player is kept so the clip is not
+    /// reloaded on the way back, but it must not play audio from behind an opaque screen.
+    var isVisible = true
 
     @State private var pool = PlayerPool()
     @State private var currentID: String?
@@ -86,7 +89,8 @@ struct VideoFeedView: View {
                         post: post,
                         isActive: post.id == currentID,
                         pool: pool,
-                        onLoadFailed: { handleLoadFailure(of: post.id) }
+                        onLoadFailed: { handleLoadFailure(of: post.id) },
+                        isVisible: isVisible
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .containerRelativeFrame(.vertical)
@@ -109,6 +113,15 @@ struct VideoFeedView: View {
                 currentID = store.posts.first?.id
             }
             syncPlaybackWindow()
+        }
+        .onChange(of: isVisible) { _, visible in
+            // The clip stays warm across a tab switch, but it must not keep playing under the
+            // upload tab. Pausing the pool rather than detaching is what preserves the position.
+            if visible {
+                syncPlaybackWindow()
+            } else {
+                pool.pauseAll(except: nil)
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             // The feed outlives the tab bar now, so the app going away is the only thing left that
