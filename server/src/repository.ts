@@ -1,4 +1,11 @@
-import type { FeedPage, PostPayload, PostRow, ReactionResult, SqlClient } from './types';
+import type {
+  CreatePostInput,
+  FeedPage,
+  PostPayload,
+  PostRow,
+  ReactionResult,
+  SqlClient,
+} from './types';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from './types';
 
 const POST_COLUMNS = `
@@ -149,4 +156,44 @@ export async function countPosts(db: SqlClient): Promise<number> {
     'SELECT COUNT(*)::int AS total FROM posts',
   );
   return result.rows[0]?.total ?? 0;
+}
+
+const INSERT_POST = `
+  INSERT INTO posts (
+    id, video_url, author_id, author_handle, author_display_name,
+    author_emoji, author_is_verified, caption, music
+  )
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+  RETURNING *
+`;
+
+/**
+ * Inserts a post and returns it in the same shape the feed serves, so a client that just
+ * uploaded a clip can drop it straight into the top of the feed without a refetch.
+ */
+export async function createPost(
+  db: SqlClient,
+  input: CreatePostInput,
+): Promise<PostPayload | null> {
+  const id = `post-${crypto.randomUUID()}`;
+  const authorId = input.authorId ?? `author-${crypto.randomUUID().slice(0, 8)}`;
+
+  const inserted = await db.query<PostRow>(INSERT_POST, [
+    id,
+    input.videoUrl,
+    authorId,
+    input.authorHandle ?? '@you',
+    input.authorDisplayName ?? 'You',
+    input.authorEmoji ?? '📱',
+    input.authorIsVerified ?? false,
+    input.caption ?? '',
+    input.music ?? 'original sound',
+  ]);
+
+  const row = inserted.rows[0];
+  if (!row) return null;
+
+  // The new post has no reactions yet, so the viewer specific flags are known to be false
+  // without another round trip.
+  return toPayload({ ...row, is_liked: false, is_saved: false });
 }

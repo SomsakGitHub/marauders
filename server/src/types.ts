@@ -1,5 +1,7 @@
 export type Bindings = {
   DATABASE_URL: string;
+  VIDEOS: R2Bucket;
+  CF_ACCOUNT_ID?: string;
 };
 
 export type QueryResult<Row = Record<string, unknown>> = {
@@ -68,6 +70,17 @@ export type FeedPage = {
   nextCursor: string | null;
 };
 
+export type CreatePostInput = {
+  videoUrl: string;
+  caption?: string;
+  music?: string;
+  authorId?: string;
+  authorHandle?: string;
+  authorDisplayName?: string;
+  authorEmoji?: string;
+  authorIsVerified?: boolean;
+};
+
 export type ReactionResult = {
   id: string;
   likes: number;
@@ -80,3 +93,6 @@ export const VIEWER_HEADER = 'x-viewer-id';
 export const DEFAULT_VIEWER = 'anonymous';
 export const MAX_PAGE_SIZE = 20;
 export const DEFAULT_PAGE_SIZE = 5;
+
+export const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+export const ALLOWED_VIDEO_EXTENSIONS = ['mp4', 'mov', 'm4v'] as const;

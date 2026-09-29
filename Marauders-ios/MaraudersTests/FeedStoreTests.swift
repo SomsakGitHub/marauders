@@ -100,6 +100,18 @@ private func pageJSON(ids: [String], likes: Int = 10, nextCursor: String?) -> St
     return "{ \"items\": [\(items)], \(cursor) \"hasMore\": true }"
 }
 
+/// Writes a throwaway clip so the upload path can be exercised without the photo library.
+private func makeTemporaryClip(bytes: Data) -> URL? {
+    let url = FileManager.default.temporaryDirectory
+        .appending(path: "marauders-test-\(UUID().uuidString).mp4")
+    do {
+        try bytes.write(to: url)
+        return url
+    } catch {
+        return nil
+    }
+}
+
 @Suite(.serialized)
 @MainActor
 struct FeedStoreTests {
@@ -251,6 +263,79 @@ struct FeedStoreTests {
 
         let likeRequests = StubURLProtocol.recordedPaths.filter { $0 == "/api/posts/a/like" }
         #expect(likeRequests.count == 1)
+    }
+
+    @Test("publishing a clip uploads it, creates the post, and puts it on top")
+    func publishPutsNewPostFirst() async throws {
+        let clipURL = try #require(makeTemporaryClip(bytes: Data([0x00, 0x01, 0x02])))
+        defer { try? FileManager.default.removeItem(at: clipURL) }
+
+        let client = StubURLProtocol.makeClient { request in
+            switch request.url?.path {
+            case "/api/videos":
+                return .init(
+                    status: 201,
+                    json: #"{"key":"videos/abc.mp4","url":"/api/videos/abc.mp4","size":3}"#
+                )
+            case "/api/posts":
+                return .init(
+                    status: 201,
+                    json: postJSON(id: "new-post", likes: 0)
+                        .replacingOccurrences(
+                            of: "https://example.invalid/new-post.m3u8",
+                            with: "https://marauders-api.js6ctz7gtj.workers.dev/api/videos/abc.mp4"
+                        )
+                )
+            default:
+                return .init(status: 200, json: pageJSON(ids: ["a"], nextCursor: nil))
+            }
+        }
+        let store = FeedStore(client: client, pageSize: 1)
+        await store.loadInitial().value
+
+        let newID = await store.publish(
+            clipURL: clipURL,
+            filename: "clip.mp4",
+            contentType: "video/mp4",
+            caption: ""
+        )
+
+        #expect(newID == "new-post")
+        #expect(store.posts.map(\.id) == ["new-post", "a"])
+        #expect(store.phase == .loaded)
+        #expect(store.actionError == nil)
+
+        // The relative path from the upload response is resolved before the post is created,
+        // otherwise the API would reject it.
+        #expect(StubURLProtocol.recordedPaths.contains("/api/videos"))
+        #expect(StubURLProtocol.recordedPaths.contains("/api/posts"))
+    }
+
+    @Test("a rejected upload reports the error and leaves the feed alone")
+    func publishFailureKeepsFeed() async throws {
+        let clipURL = try #require(makeTemporaryClip(bytes: Data([0x00])))
+        defer { try? FileManager.default.removeItem(at: clipURL) }
+
+        let client = StubURLProtocol.makeClient { request in
+            if request.url?.path == "/api/videos" {
+                return .init(status: 413, json: #"{"error":"video_too_large"}"#)
+            }
+            return .init(status: 200, json: pageJSON(ids: ["a"], nextCursor: nil))
+        }
+        let store = FeedStore(client: client, pageSize: 1)
+        await store.loadInitial().value
+
+        let newID = await store.publish(
+            clipURL: clipURL,
+            filename: "clip.mp4",
+            contentType: "video/mp4",
+            caption: ""
+        )
+
+        #expect(newID == nil)
+        #expect(store.posts.map(\.id) == ["a"])
+        #expect(store.actionError == "video_too_large")
+        #expect(store.uploadState == .idle)
     }
 
     @Test("the rail button still toggles a like off")

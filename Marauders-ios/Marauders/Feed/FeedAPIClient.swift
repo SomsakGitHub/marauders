@@ -39,6 +39,14 @@ struct ReactionResult: Decodable {
     let isSaved: Bool
 }
 
+struct UploadedVideo: Decodable {
+    let key: String
+    /// A path relative to the API host, resolved against `baseURL` before it is sent to the
+    /// player so the bucket itself never has to be public.
+    let url: String
+    let size: Int
+}
+
 enum FeedAPIError: LocalizedError {
     case invalidResponse
     case server(status: Int, message: String)
@@ -101,6 +109,45 @@ struct FeedAPIClient {
         try await setReaction("save", enabled: saved, postId: postId)
     }
 
+    func uploadVideo(at fileURL: URL, filename: String, contentType: String) async throws -> UploadedVideo {
+        let url = baseURL.appending(path: "api/videos")
+        let boundary = "marauders-\(UUID().uuidString)"
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = MultipartBody(boundary: boundary)
+        try body.addFile(at: fileURL, fieldName: "video", filename: filename, contentType: contentType)
+        body.finalize()
+
+        let data = try await sendUpload(request, from: body.data)
+        do {
+            return try JSONDecoder().decode(UploadedVideo.self, from: data)
+        } catch {
+            throw FeedAPIError.decoding(error)
+        }
+    }
+
+    func createPost(videoURL: URL, caption: String) async throws -> VideoPost {
+        let url = baseURL.appending(path: "api/posts")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "videoUrl": videoURL.absoluteString,
+            "caption": caption,
+        ])
+
+        let data = try await send(request)
+        do {
+            return try JSONDecoder().decode(VideoPost.self, from: data)
+        } catch {
+            throw FeedAPIError.decoding(error)
+        }
+    }
+
     private func setReaction(
         _ name: String,
         enabled: Bool,
@@ -128,21 +175,44 @@ struct FeedAPIClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         do {
-            let (data, response) = try await session.data(for: request)
-
-            guard let http = response as? HTTPURLResponse else {
-                throw FeedAPIError.invalidResponse
-            }
-            guard (200..<300).contains(http.statusCode) else {
-                let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
-                    ?? "HTTP \(http.statusCode)"
-                throw FeedAPIError.server(status: http.statusCode, message: message)
-            }
-            return data
+            return try await perform(request) { try await session.data(for: $0) }
         } catch let error as FeedAPIError {
             throw error
         } catch {
             throw FeedAPIError.transport(error)
         }
+    }
+
+    /// Uploads go out as a file body rather than through `send`, so the status handling is
+    /// shared but the transport is not.
+    private func sendUpload(_ request: URLRequest, from body: Data) async throws -> Data {
+        var request = request
+        request.setValue(viewerId, forHTTPHeaderField: "X-Viewer-Id")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        do {
+            return try await perform(request) { try await session.upload(for: $0, from: body) }
+        } catch let error as FeedAPIError {
+            throw error
+        } catch {
+            throw FeedAPIError.transport(error)
+        }
+    }
+
+    private func perform(
+        _ request: URLRequest,
+        using transport: (URLRequest) async throws -> (Data, URLResponse)
+    ) async throws -> Data {
+        let (data, response) = try await transport(request)
+
+        guard let http = response as? HTTPURLResponse else {
+            throw FeedAPIError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
+                ?? "HTTP \(http.statusCode)"
+            throw FeedAPIError.server(status: http.statusCode, message: message)
+        }
+        return data
     }
 }

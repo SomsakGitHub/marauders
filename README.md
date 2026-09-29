@@ -22,6 +22,9 @@ tab bar; a clip fills the screen and the only chrome is what playback itself nee
   pulling another page first if the failure landed on the tail. The failure card stays for
   anyone who scrolls back to a dead post on purpose
 - Cursor based pagination that prefetches as the tail comes into view, plus an end of feed marker
+- A `+` button that picks a video from the phone, uploads it, creates the post and scrolls
+  straight to it. The clip is staged out of the photo library before the transfer, because the
+  library's own file is temporary and can disappear the moment the picker call returns
 - `AVAudioSession` on `.ambient` with `.mixWithOthers`: there is no mute button, so the
   hardware silent switch has to keep working and a clip must never stop other audio.
   The mode is `.default`, not `.moviePlayback`, which `AVAudioSession` only accepts alongside
@@ -48,6 +51,8 @@ flowchart TD
     VideoPostView --> AudioSessionController
 
     FeedStore -->|cursor, optimistic reactions| FeedAPIClient
+    VideoFeedView -->|PhotosPicker| PickedVideo
+    FeedStore -->|upload, createPost| FeedAPIClient
     FeedAPIClient -->|URLSession| Worker
 
     VideoPlayerSurface --> AVPlayerLayer
@@ -57,6 +62,8 @@ flowchart TD
     subgraph Edge
         Worker[Hono worker] --> Repository
         Repository --> Neon[(Neon / Postgres)]
+        Worker <--> Videos[(R2 / marauders-videos)]
+        AVPlayer -->|Range requests| Worker
     end
 ```
 
@@ -70,7 +77,9 @@ flowchart TD
 | `VideoPlayerSurface` | `UIViewRepresentable` | Bridges `AVPlayer` into a view through a custom `AVPlayerLayer` host, with a selectable `videoGravity` |
 | `AmbientVideoBackdrop` | `UIViewRepresentable` | Second `AVPlayerLayer` at `.resizeAspectFill` under a `UIVisualEffectView`, used as the blurred backdrop behind a letterboxed clip |
 | `AudioSessionController` | Plain class | Single place that configures the shared `AVAudioSession` |
-| `repository.ts` | Module | Postgres queries: feed paging, reaction upserts, cursor encoding |
+| `PickedVideo` | `Transferable` struct | Copies the picked clip out of the photo library onto a path this process owns |
+| `MultipartBody` | Struct | Encodes the clip as `multipart/form-data`; escapes the filename so it cannot forge a boundary |
+| `repository.ts` | Module | Postgres queries: feed paging, reaction upserts, post creation, cursor encoding |
 | `neon.ts` | Module | Adapts the Neon HTTP driver to the narrow `SqlClient` the repository talks to |
 | `index.ts` | Hono app | Routing, viewer extraction, error handling |
 
@@ -86,7 +95,24 @@ is what makes the reaction endpoints idempotent.
 | `POST` | `/api/posts/:id/like` | Inserts into `post_likes`; increments only when the row is new |
 | `DELETE` | `/api/posts/:id/like` | Deletes from `post_likes`; decrements only when a row was removed |
 | `POST` | `/api/posts/:id/save` | Same contract for saves |
-| `DELETE` | `/api/posts/:id/save` | Same contract for saves |
+| `POST` | `/api/videos` | Multipart upload, field `video`; `mp4`, `mov` and `m4v` up to 64 MB |
+| `GET` | `/api/videos/:key` | Streams a stored clip, honouring a single `Range` |
+| `POST` | `/api/posts` | Creates a post from a URL this API stored |
+
+Uploading and creating a post are separate calls, so a clip that reaches the bucket but whose
+post fails can be retried without paying for the transfer again:
+
+```bash
+curl -X POST "$API/api/videos" -F "video=@clip.mp4;type=video/mp4"
+# {"key":"videos/<uuid>.mp4","url":"/api/videos/<uuid>.mp4","size":7340032}
+
+curl -X POST "$API/api/posts" -H 'content-type: application/json' \
+  -d "{\"videoUrl\":\"$API/api/videos/<uuid>.mp4\",\"caption\":\"คลิปแรกของฉัน\"}"
+```
+
+The upload response returns a path rather than a bucket URL, so the client resolves it against
+the API host before creating the post. `POST /api/posts` only accepts a `videoUrl` on
+`/api/videos/`, which is what keeps the feed from being pointed at a third-party host.
 
 Reaction responses are authoritative and always include the post's current counters and
 the caller's own flags, so the client reconciles instead of guessing:
@@ -97,6 +123,29 @@ the caller's own flags, so the client reconciles instead of guessing:
 
 Cursor values are base64 encoded sequence numbers. A malformed cursor is treated as the
 start of the feed rather than an error.
+
+## Video upload
+
+Clips are stored in a private R2 bucket and streamed back through the Worker, so nothing has
+to be publicly reachable for playback and the bucket is never a third-party dependency in a
+post.
+
+- Bucket: `marauders-videos`, bound to the Worker as `VIDEOS` via `[[r2_buckets]]` in
+  `wrangler.toml`
+- Keys are `videos/<uuid>.<ext>`, so nothing outside the prefix is ever addressable
+- Limits are `MAX_UPLOAD_BYTES` (64 MB) and `ALLOWED_VIDEO_EXTENSIONS` in `src/types.ts`
+- The body is written with `file.stream()` rather than a buffer, so a large clip does not have
+  to fit in the isolate
+
+A `Range` header is passed through to R2 and the resolved slice is turned back into
+`Content-Range`, which is what lets `AVPlayer` seek without downloading the whole file. Only a
+single range is honoured: answering the multipart `byteranges` form would mean prefixing each
+part onto the body, and no media client asks for it. A malformed or unsatisfiable range is a
+`416` rather than a silent full-body fallback.
+
+The response status follows the request, not the shape of the result. R2 reports a range even
+for a full read, so keying the `206` off `object.range` would turn every plain request into a
+partial response.
 
 ## Design decisions
 
@@ -160,6 +209,27 @@ negative. The write and the read of the resulting counters are sent as a single
 same statement wrote: the read needs the transaction's next statement to see the new count.
 `target` also makes an unknown post a clean no-op instead of a foreign key violation.
 
+**The bucket stays private and the Worker is the only way in.** Clips are streamed back through
+`/api/videos`, so playback needs nothing publicly reachable and the bucket never becomes a
+third-party dependency inside a post. Storing the object with `file.stream()` rather than a
+buffer means a large clip does not have to fit in the isolate.
+
+**Uploading and creating a post are two calls, and the clip is staged before the first one.**
+`PhotosPicker` hands back a file the photo library deletes as soon as the picker call returns,
+so `PickedVideo` copies it onto a path this process owns during the transfer; reading it later
+would race the library. Splitting the two API calls also means a post that fails to be created
+can be retried without paying for the transfer again.
+
+**A post may only point at a clip this API stored.** `POST /api/posts` matches the URL path
+against `/api/videos/` rather than trusting the origin, so a post cannot aim the feed at a
+third-party host that would then learn who is watching. Because the bucket is private, that
+path check covers both the relative URL the upload returns and the absolute form a client
+builds from it.
+
+**The response status follows the request, not the result.** R2 populates `object.range` even
+for a full read, so deciding `206` from that field would turn every plain request into a partial
+response. The route keys the status off whether a `Range` header actually arrived.
+
 ## Project layout
 
 ```
@@ -175,24 +245,28 @@ Marauders-ios/
       VideoPlayerSurface.swift   AVPlayerLayer bridge and the blurred backdrop
       PlayerPool.swift           Player cache, eviction, session events
       AudioSessionController.swift
-      FeedStore.swift            Feed state machine and optimistic reactions
-      FeedAPIClient.swift        URLSession client, viewer identity, errors
+      FeedStore.swift            Feed state machine, optimistic reactions, publishing
+      FeedAPIClient.swift        URLSession client, viewer identity, errors, upload
+      MultipartBody.swift        multipart/form-data encoder for the clip
+      PickedVideo.swift          PhotosPicker transfer that stages the clip on disk
       VideoPost.swift            Post model and preview fixtures
   MaraudersTests/
     PlayerPoolTests.swift        Eviction, pinning and cache tests
-    FeedStoreTests.swift         Pagination and optimistic rollback tests
+    FeedStoreTests.swift         Pagination, optimistic rollback and publish tests
+    MultipartBodyTests.swift     Boundary, escaping and binary fidelity tests
 
 server/
-  src/index.ts                   Hono routes
-  src/repository.ts              Postgres queries and cursor codec
+  src/index.ts                   Hono routes, upload, and R2 streaming
+  src/repository.ts              Postgres queries, post creation and cursor codec
   src/neon.ts                    Neon HTTP driver adapter
   src/types.ts                   Bindings and payload contracts
   migrations/0001_init.sql       Schema
   seed.sql                       Sample feed
   scripts/db.mjs                 Applies SQL to Neon without psql
-  test/pglite.ts                 In-process Postgres for tests
+  test/pglite.ts                 In-process Postgres and an in-memory R2 for tests
   test/repository.test.ts        Paging and reaction invariants
   test/api.test.ts               HTTP contract
+  test/uploads.test.ts           Upload, range and post creation
   .dev.vars.example              Template for the local connection string
   wrangler.toml                  Worker config
 ```
@@ -203,6 +277,8 @@ server/
 - Node 20 or newer for the API
 - A Neon database: the free tier is enough, and the connection string is the only credential
 - A network connection: the seeded feed streams Apple's public HLS test streams
+- A Cloudflare account for the R2 bucket that holds uploaded clips. Uploads answer `503` without
+  the binding, and the rest of the feed is unaffected
 
 ## Running
 
@@ -237,6 +313,7 @@ on HTTPS.
 ```sh
 cd server
 npx wrangler login
+npx wrangler r2 bucket create marauders-videos   # once, if it does not exist yet
 npm run deploy
 npx wrangler secret put DATABASE_URL     # the same connection string
 ```
@@ -244,6 +321,11 @@ npx wrangler secret put DATABASE_URL     # the same connection string
 The secret is a runtime binding, so redeploys never bake it into the bundle. To point the app
 at the deployed Worker, change `AppConfig.apiBaseURL` to the printed
 `https://marauders-api.<subdomain>.workers.dev`.
+
+The bucket binding in `wrangler.toml` is what activates uploads locally and in production
+together, so `npm run dev` and the deployed Worker behave the same. Locally, `wrangler dev`
+keeps objects in a local store; `npx wrangler r2 object delete <bucket>/<key> --remote`
+removes a production object.
 
 Rotate the Neon password if the connection string has been shared in a chat, a screenshot or a
 commit.
@@ -262,7 +344,10 @@ implements the same narrow `SqlClient` interface as the Neon adapter, which keep
 repository honest about what the driver can do. `repository.test.ts` covers the cursor codec,
 paging without gaps or repeats, page size clamping, counter idempotency and viewer isolation.
 `api.test.ts` drives the Hono app directly to check status codes, the camelCase payload shape
-the iOS client decodes, and the unconfigured-database path.
+the iOS client decodes, and the unconfigured-database path. `uploads.test.ts` runs the upload
+and streaming routes against an in-memory R2 double, covering a plain read versus a `200`/`206`
+split, suffix ranges, an unsatisfiable range, a path that tries to escape the `videos/` prefix,
+and the post creation rules.
 
 ```sh
 xcodebuild test \
@@ -274,12 +359,16 @@ xcodebuild test \
 The iOS suite covers the parts of the app that are not visual. `PlayerPoolTests` pins down LRU
 eviction order, pin protection, recency refresh, invalidation and mute forwarding.
 `FeedStoreTests` drives the store through a `URLProtocol` stub to cover pagination, the
-prefetch threshold, the failed-feed phase, optimistic likes, and rollback when the API
-rejects a reaction.
+prefetch threshold, the failed-feed phase, optimistic likes, rollback when the API
+rejects a reaction, and publishing a clip end to end. `MultipartBodyTests` pins the boundary
+format, the filename escaping and that binary bytes survive the encoding unchanged.
 
+**Uploads are two calls, and the clip is staged before the first one.** `PhotosPicker` hands
 ## Roadmap
 
-- Auth so viewer identity survives reinstalls
+- Auth so viewer identity survives reinstalls, and so the upload endpoint stops being open
+- Transcode on upload so a `.mov` from the camera plays everywhere instead of relying on the
+  container the phone happened to record
 - Comment sheet, profile tab and search
 - Preload tuning based on measured scroll behaviour on device
 - Offline cache for the last viewed clips

@@ -6,6 +6,14 @@ compatibility_date = "2025-01-15"
 port = 8787
 ip = "127.0.0.1"
 
+[vars]
+CF_ACCOUNT_ID = "b131b12456fbb5e37718f5cdba8f36ec"
+
+# The bucket stays private: clips are streamed back through the Worker's /api/videos route.
+[[r2_buckets]]
+binding = "VIDEOS"
+bucket_name = "marauders-videos"
+
 # DATABASE_URL is a runtime secret and is never committed.
 #   local:  .dev.vars
 #   prod:   npx wrangler secret put DATABASE_URL

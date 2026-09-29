@@ -17,11 +17,18 @@ final class FeedStore {
         case failed(String)
     }
 
+    enum UploadState: Equatable {
+        case idle
+        case uploading
+        case posting
+    }
+
     private(set) var posts: [VideoPost] = []
     private(set) var phase: Phase = .idle
     private(set) var isLoadingMore = false
     private(set) var hasMore = true
     private(set) var actionError: String?
+    private(set) var uploadState: UploadState = .idle
 
     @ObservationIgnored private let client: FeedAPIClient
     @ObservationIgnored private let pageSize: Int
@@ -141,6 +148,54 @@ final class FeedStore {
             restore(previous)
             actionError = error.localizedDescription
         }
+    }
+
+    /// Uploads a clip and creates the post in one step, then puts it at the top of the feed so
+    /// the new video is the one on screen.
+    @discardableResult
+    func publish(
+        clipURL: URL,
+        filename: String,
+        contentType: String,
+        caption: String
+    ) async -> String? {
+        guard uploadState == .idle else { return nil }
+
+        uploadState = .uploading
+        defer { uploadState = .idle }
+
+        do {
+            let uploaded = try await client.uploadVideo(
+                at: clipURL,
+                filename: filename,
+                contentType: contentType
+            )
+
+            // The API hands back a path, so it is resolved against the API host before the
+            // post is created and the player ever sees it.
+            guard let videoURL = URL(string: uploaded.url, relativeTo: client.baseURL)?.absoluteURL else {
+                actionError = "ไม่สามารถอ่านที่อยู่วิดีโอที่เซิร์ฟเวอร์ส่งกลับมาได้"
+                return nil
+            }
+
+            uploadState = .posting
+            let post = try await client.createPost(videoURL: videoURL, caption: caption)
+
+            if phase != .loaded {
+                phase = .loaded
+            }
+            posts.removeAll { $0.id == post.id }
+            posts.insert(post, at: 0)
+            nextCursor = nil
+            return post.id
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func report(_ message: String) {
+        actionError = message
     }
 
     func dismissActionError() {
