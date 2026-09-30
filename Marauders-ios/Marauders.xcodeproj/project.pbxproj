@@ -24,6 +24,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0A1B2C3D4E5F60718293A4B5 /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.xcconfig; sourceTree = "<group>"; };
 		06AF167A303C643200200F8C /* Marauders.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Marauders.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		06AF1689303C643300200F8C /* MaraudersTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MaraudersTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		06AF1693303C643300200F8C /* MaraudersUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MaraudersUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -75,6 +76,7 @@
 		06AF1671303C643200200F8C = {
 			isa = PBXGroup;
 			children = (
+				0A1B2C3D4E5F60718293A4B5 /* Secrets.xcconfig */,
 				06AF167C303C643200200F8C /* Marauders */,
 				06AF168C303C643300200F8C /* MaraudersTests */,
 				06AF1696303C643300200F8C /* MaraudersUITests */,
@@ -393,6 +395,7 @@
 		06AF169E303C643300200F8C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				baseConfigurationReference = 0A1B2C3D4E5F60718293A4B5 /* Secrets.xcconfig */;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
@@ -427,6 +430,7 @@
 		06AF169F303C643300200F8C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				baseConfigurationReference = 0A1B2C3D4E5F60718293A4B5 /* Secrets.xcconfig */;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;

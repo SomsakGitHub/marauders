@@ -2,6 +2,8 @@ export type Bindings = {
   DATABASE_URL: string;
   VIDEOS: R2Bucket;
   CF_ACCOUNT_ID?: string;
+  /** Shared secret required by the write endpoints. Set with `wrangler secret put`. */
+  UPLOAD_TOKEN?: string;
 };
 
 export type QueryResult<Row = Record<string, unknown>> = {

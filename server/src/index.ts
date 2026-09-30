@@ -18,6 +18,7 @@ import {
   type CreatePostInput,
   type SqlClient,
 } from './types';
+import { UPLOAD_TOKEN_HEADER, guardWrite } from './write-guard';
 
 type AppContext = Context<{ Bindings: Bindings }>;
 type ClientResolver = (databaseUrl: string) => SqlClient;
@@ -46,6 +47,23 @@ export function createApp(resolve: ClientResolver) {
       return c.json({ error: 'database_not_configured' }, 503);
     }
     return client;
+  };
+
+  /**
+   * Authorises a write before it costs anything.
+   *
+   * Checked before the body is parsed so an unauthenticated caller never gets a 64MB form read
+   * into the isolate on the way to being rejected.
+   */
+  const requireWriteAccess = (c: AppContext): Response | null => {
+    const verdict = guardWrite(
+      c.env as unknown as Record<string, unknown>,
+      c,
+      c.req.header(UPLOAD_TOKEN_HEADER)?.trim(),
+      Date.now(),
+    );
+    if (verdict.ok) return null;
+    return c.json({ error: verdict.error }, verdict.status);
   };
 
   app.get('/api/health', async (c) => {
@@ -101,6 +119,9 @@ export function createApp(resolve: ClientResolver) {
    * on the bucket.
    */
   app.post('/api/videos', async (c) => {
+    const denied = requireWriteAccess(c);
+    if (denied) return denied;
+
     const videos = c.env.VIDEOS;
     if (!videos) {
       return c.json({ error: 'uploads_not_configured' }, 503);
@@ -186,6 +207,9 @@ export function createApp(resolve: ClientResolver) {
   });
 
   app.post('/api/posts', async (c) => {
+    const denied = requireWriteAccess(c);
+    if (denied) return denied;
+
     const client = requireDatabase(c);
     if (client instanceof Response) return client;
 

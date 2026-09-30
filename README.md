@@ -16,8 +16,14 @@ exception: it exists to reach the upload tab, and nothing else is in it.
 - Full bleed vertical paging, one clip per screen, snapping to the next
 - Landscape clips are shown whole, floating over a blurred, dimmed copy of themselves so a
   16:9 video fills a 19.5:9 screen instead of being cropped to its middle 46 percent
-- Tap anywhere to pause, with a play glyph while paused
-- Pooled `AVPlayer` instances that preload the neighbouring clips and loop seamlessly
+- Tap to pause and resume, with a play glyph while paused, and press and hold to park the clip
+  for as long as you keep your finger down. The progress hairline tracks the active clip
+- Pooled `AVPlayer` instances that preload the neighbouring clips and stay mounted across a tab
+  switch, so coming back resumes the same clip at the same position instead of reloading it
+- A clip that ends moves the feed on rather than looping. The last clip wraps only if it played
+  through to the end; if it is the tail and it cannot play, the feed says so instead of spinning
+- The first frame of each clip is decoded and cached for the session, so a swipe shows a picture
+  while the video buffers instead of a black rectangle and a spinner
 - Buffering spinner and a feed level error state
 - A clip that cannot play is skipped instead of shown: the feed jumps to the next playable post,
   pulling another page first if the failure landed on the tail. The failure card stays for
@@ -106,18 +112,21 @@ is what makes the reaction endpoints idempotent.
 | `POST` | `/api/posts/:id/like` | Inserts into `post_likes`; increments only when the row is new |
 | `DELETE` | `/api/posts/:id/like` | Deletes from `post_likes`; decrements only when a row was removed |
 | `POST` | `/api/posts/:id/save` | Same contract for saves |
-| `POST` | `/api/videos` | Multipart upload, field `video`; `mp4`, `mov` and `m4v` up to 64 MB |
+| `POST` | `/api/videos` | Multipart upload, field `video`; `mp4`, `mov` and `m4v` up to 64 MB. Requires `x-upload-token` |
 | `GET` | `/api/videos/:key` | Streams a stored clip, honouring a single `Range` |
-| `POST` | `/api/posts` | Creates a post from a URL this API stored |
+| `POST` | `/api/posts` | Creates a post from a URL this API stored. Requires `x-upload-token` |
 
-Uploading and creating a post are separate calls, so a clip that reaches the bucket but whose
-post fails can be retried without paying for the transfer again:
+The two write routes are gated by a shared secret; everything else is readable by anyone holding
+the URL, which is what a feed is. Uploading and creating a post are separate calls, so a clip that
+reaches the bucket but whose post fails can be retried without paying for the transfer again:
 
 ```bash
-curl -X POST "$API/api/videos" -F "video=@clip.mp4;type=video/mp4"
+curl -X POST "$API/api/videos" -H "x-upload-token: $UPLOAD_TOKEN" \
+  -F "video=@clip.mp4;type=video/mp4"
 # {"key":"videos/<uuid>.mp4","url":"/api/videos/<uuid>.mp4","size":7340032}
 
-curl -X POST "$API/api/posts" -H 'content-type: application/json' \
+curl -X POST "$API/api/posts" -H "x-upload-token: $UPLOAD_TOKEN" \
+  -H 'content-type: application/json' \
   -d "{\"videoUrl\":\"$API/api/videos/<uuid>.mp4\",\"caption\":\"คลิปแรกของฉัน\"}"
 ```
 
@@ -147,6 +156,42 @@ post.
 - Limits are `MAX_UPLOAD_BYTES` (64 MB) and `ALLOWED_VIDEO_EXTENSIONS` in `src/types.ts`
 - The body is written with `file.stream()` rather than a buffer, so a large clip does not have
   to fit in the isolate
+
+## Write access
+
+`POST /api/videos` and `POST /api/posts` are the two routes that cost money or write rows, and
+without a check anyone who learns the Worker URL can store 64MB objects in the bucket for as long
+as they like. Both require an `x-upload-token` header matching the `UPLOAD_TOKEN` Worker secret:
+
+```bash
+wrangler secret put UPLOAD_TOKEN    # 32+ random bytes, e.g. `openssl rand -hex 32`
+```
+
+The same value goes in the app's `Config/Secrets.xcconfig`, which is gitignored:
+
+```
+MARAUDERS_UPLOAD_TOKEN = paste-the-token-here
+```
+
+`AppConfig.uploadToken` reads it back out of the bundle, so it never sits inline in the source.
+`Config/Secrets.example.xcconfig` is the committed template.
+
+How it behaves, all in `src/write-guard.ts`:
+
+- The check runs before the body is parsed, so a rejected caller never gets a 64MB form read into
+  the isolate on the way to a `401`
+- A missing secret fails closed with `401 uploads_not_configured`; there is no state where writes
+  are open because configuration was forgotten
+- Comparison is length checked and non short circuiting, so a correct prefix does not pass and the
+  timing does not leak how many characters were right
+- `20` writes per `60s` per client address, then `429 rate_limited`. Unauthenticated attempts are
+  not charged to the limit, so a flood cannot lock the real app out
+- The counter lives in isolate memory, which makes it a floor rather than a hard cap: Workers do
+  not share memory across instances. A hard global limit needs a Durable Object or KV
+
+This is deliberately not user auth. A token inside an app binary is readable by anyone who
+unzips it, so what it buys is that the URL alone is not enough; it is the right shape while the app
+has no accounts, and it is not a substitute for accounts later.
 
 A `Range` header is passed through to R2 and the resolved slice is turned back into
 `Content-Range`, which is what lets `AVPlayer` seek without downloading the whole file. Only a
@@ -237,6 +282,12 @@ of it would sit on the one surface that must stay distraction free. `ContentView
 `FeedStore` and hands it to both tabs, so publishing inserts the post at the top of the feed
 and the upload tab asks the feed to scroll onto it. Neither tab refetches.
 
+**The write routes are gated before they cost anything.** `requireWriteAccess` runs ahead of the
+form parse and the database lookup, so an unauthenticated caller is turned away without a 64MB
+body being read into the isolate. A Worker with no `UPLOAD_TOKEN` refuses writes rather than
+accepting them, which is the failure mode that matters: configuration forgotten on a fresh deploy
+stops uploads instead of quietly opening the bucket.
+
 **A post may only point at a clip this API stored.** `POST /api/posts` matches the URL path
 against `/api/videos/` rather than trusting the origin, so a post cannot aim the feed at a
 third-party host that would then learn who is watching. Because the bucket is private, that
@@ -251,7 +302,8 @@ response. The route keys the status off whether a `Range` header actually arrive
 
 ```
 Marauders-ios/
-  Config/Info.plist              ATS exception for local development
+  Config/Info.plist              ATS exception, and the upload token build setting
+  Config/Secrets.example.xcconfig Template for the gitignored Secrets.xcconfig
   Marauders/
     ContentView.swift            Tab container
     MaraudersApp.swift           App entry point
@@ -277,6 +329,7 @@ server/
   src/index.ts                   Hono routes, upload, and R2 streaming
   src/repository.ts              Postgres queries, post creation and cursor codec
   src/neon.ts                    Neon HTTP driver adapter
+  src/write-guard.ts             Token check and per-isolate rate limit for writes
   src/types.ts                   Bindings and payload contracts
   migrations/0001_init.sql       Schema
   seed.sql                       Sample feed
@@ -284,7 +337,8 @@ server/
   test/pglite.ts                 In-process Postgres and an in-memory R2 for tests
   test/repository.test.ts        Paging and reaction invariants
   test/api.test.ts               HTTP contract
-  test/uploads.test.ts           Upload, range and post creation
+  test/uploads.test.ts           Upload, range, post creation and write access
+  test/write-guard.test.ts       Token comparison, fail closed, rate limit windows
   .dev.vars.example              Template for the local connection string
   wrangler.toml                  Worker config
 ```
@@ -328,6 +382,16 @@ Pick an iOS simulator and run the `Marauders` scheme. The app reads its endpoint
 `Config/Info.plist` only permits cleartext to local addresses, so a deployed endpoint can stay
 on HTTPS.
 
+Set `Config/Secrets.xcconfig` before publishing, or the write routes answer `401`:
+
+```sh
+cp Marauders-ios/Config/Secrets.example.xcconfig Marauders-ios/Config/Secrets.xcconfig
+# MARAUDERS_UPLOAD_TOKEN = the same value as the Worker's UPLOAD_TOKEN secret
+```
+
+Without it the feed still loads, only uploading is refused, so a half configured checkout is
+obvious rather than silently broken.
+
 ## Deploying
 
 ```sh
@@ -336,10 +400,15 @@ npx wrangler login
 npx wrangler r2 bucket create marauders-videos   # once, if it does not exist yet
 npm run deploy
 npx wrangler secret put DATABASE_URL     # the same connection string
+npx wrangler secret put UPLOAD_TOKEN     # a shared secret for the write routes
 ```
 
-The secret is a runtime binding, so redeploys never bake it into the bundle. To point the app
-at the deployed Worker, change `AppConfig.apiBaseURL` to the printed
+Both secrets are runtime bindings, so redeploys never bake them into the bundle. `UPLOAD_TOKEN`
+has no safe default: deploying without it means `POST /api/videos` and `POST /api/posts` answer
+`401` until it is set, which is deliberate. Put the same value in
+`Config/Secrets.xcconfig` for the app.
+
+To point the app at the deployed Worker, change `AppConfig.apiBaseURL` to the printed
 `https://marauders-api.<subdomain>.workers.dev`.
 
 The bucket binding in `wrangler.toml` is what activates uploads locally and in production
@@ -367,7 +436,10 @@ paging without gaps or repeats, page size clamping, counter idempotency and view
 the iOS client decodes, and the unconfigured-database path. `uploads.test.ts` runs the upload
 and streaming routes against an in-memory R2 double, covering a plain read versus a `200`/`206`
 split, suffix ranges, an unsatisfiable range, a path that tries to escape the `videos/` prefix,
-and the post creation rules.
+the post creation rules, and that the write routes refuse a caller with no token.
+`write-guard.test.ts` covers the guard on its own: the fail closed path when the secret is absent,
+prefix and timing resistance, the rate window, and that unauthenticated attempts are not charged
+to the limit.
 
 ```sh
 xcodebuild test \

@@ -25,6 +25,9 @@ actor PosterFrameCache {
     private var frames: [URL: UIImage] = [:]
     private var inFlight: [URL: Task<UIImage?, Never>] = [:]
     private var misses: Set<URL> = []
+    /// Oldest first. A dictionary does not keep insertion order, so the age of a frame has to be
+    /// tracked separately for eviction to drop the clip that has been around the longest.
+    private var order: [URL] = []
 
     private let generator: PosterGenerator
     private let limit: Int
@@ -76,13 +79,14 @@ actor PosterFrameCache {
 
     private func store(_ image: UIImage, for url: URL) {
         frames[url] = image
+        order.removeAll { $0 == url }
+        order.append(url)
         guard frames.count > limit else { return }
 
-        // Evict in insertion order, which is close enough to age for a session-scoped cache and
-        // avoids tracking access the way the player pool does. The keys are copied out first
-        // because the collection is being read while the dictionary is being written.
-        let excess = frames.count - limit
-        let victims = Array(frames.keys).prefix(excess)
+        // Drops the frames that arrived longest ago, keeping the ones for the clips most recently
+        // scrolled to.
+        let victims = order.prefix(frames.count - limit)
+        order.removeFirst(victims.count)
         for key in victims {
             frames[key] = nil
         }

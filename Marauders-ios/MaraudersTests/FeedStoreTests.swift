@@ -17,10 +17,12 @@ final class StubURLProtocol: URLProtocol {
 
     nonisolated(unsafe) static var responder: ((URLRequest) throws -> Response)?
     nonisolated(unsafe) static var recordedPaths: [String] = []
+    nonisolated(unsafe) static var recordedRequests: [URLRequest] = []
 
     static func reset() {
         responder = nil
         recordedPaths = []
+        recordedRequests = []
     }
 
     private static func session() -> URLSession {
@@ -44,6 +46,7 @@ final class StubURLProtocol: URLProtocol {
     }
 
     override func startLoading() {
+        Self.recordedRequests.append(request)
         Self.recordedPaths.append(request.url?.path ?? "")
         Self.recordedPaths.append(request.url?.query ?? "")
 
@@ -405,5 +408,61 @@ struct FeedStoreTests {
 
         #expect(store.posts[0].isLiked == false)
         #expect(store.posts[0].likes == 9)
+    }
+
+    @Test("the write routes carry the upload token")
+    func writeRequestsCarryToken() async throws {
+        let clipURL = try #require(makeTemporaryClip(bytes: Data([0x00, 0x01])))
+        defer { try? FileManager.default.removeItem(at: clipURL) }
+
+        let client = StubURLProtocol.makeClient { request in
+            switch request.url?.path {
+            case "/api/videos":
+                return .init(
+                    status: 201,
+                    json: #"{"key":"videos/tok.mp4","url":"/api/videos/tok.mp4","size":2}"#
+                )
+            case "/api/posts":
+                return .init(status: 201, json: postJSON(id: "tok", likes: 0))
+            default:
+                return .init(status: 200, json: pageJSON(ids: ["a"], nextCursor: nil))
+            }
+        }
+        var withToken = client
+        withToken.uploadToken = "secret-token"
+        let store = FeedStore(client: withToken, pageSize: 1)
+        await store.loadInitial().value
+
+        _ = await store.publish(
+            clipURL: clipURL,
+            filename: "clip.mp4",
+            contentType: "video/mp4",
+            caption: ""
+        )
+
+        let upload = StubURLProtocol.recordedRequests.filter { $0.url?.path == "/api/videos" }
+        let create = StubURLProtocol.recordedRequests.filter { $0.url?.path == "/api/posts" }
+        #expect(upload.count == 1)
+        #expect(create.count == 1)
+        #expect(upload.first?.value(forHTTPHeaderField: "X-Upload-Token") == "secret-token")
+        #expect(create.first?.value(forHTTPHeaderField: "X-Upload-Token") == "secret-token")
+    }
+
+    @Test("reads stay unauthenticated, so the feed keeps working without the token")
+    func readRequestsOmitToken() async throws {
+        let client = StubURLProtocol.makeClient { _ in
+            StubURLProtocol.Response(status: 200, json: pageJSON(ids: ["a"], nextCursor: nil))
+        }
+        var withToken = client
+        withToken.uploadToken = "secret-token"
+        let store = FeedStore(client: withToken, pageSize: 1)
+
+        await store.loadInitial().value
+
+        let feed = StubURLProtocol.recordedRequests.filter { $0.url?.path == "/api/feed" }
+        #expect(feed.count == 1)
+        #expect(feed.first?.value(forHTTPHeaderField: "X-Upload-Token") == nil)
+        // The viewer id is still sent, since reactions are keyed off it.
+        #expect(feed.first?.value(forHTTPHeaderField: "X-Viewer-Id") == "test-viewer")
     }
 }

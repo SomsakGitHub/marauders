@@ -2,7 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/index';
 import { createFakeR2Bucket, createTestDatabase, type FakeR2Bucket, type TestDatabase } from './pglite';
 
-const ENV_BASE = { DATABASE_URL: 'postgres://unused/test' };
+const TOKEN = 'test-upload-token';
+const ENV_BASE = { DATABASE_URL: 'postgres://unused/test', UPLOAD_TOKEN: TOKEN };
+const WRITE_HEADERS = { 'x-upload-token': TOKEN };
 const STORED_URL = 'http://local/api/videos/';
 
 let harness: TestDatabase;
@@ -24,18 +26,31 @@ beforeEach(async () => {
   videos.objects.clear();
 });
 
-const upload = async (name: string, type = 'video/mp4', body = 'fake-mp4-bytes') => {
+const upload = async (name: string, type = 'video/mp4', body = 'fake-mp4-bytes', token: string | null = TOKEN) => {
   const form = new FormData();
   form.append('video', new File([body], name, { type }));
-  return app.request('http://local/api/videos', { method: 'POST', body: form }, { ...ENV_BASE, VIDEOS: videos });
+  const headers: Record<string, string> = {};
+  if (token !== null) headers['x-upload-token'] = token;
+  return app.request(
+    'http://local/api/videos',
+    { method: 'POST', body: form, headers },
+    { ...ENV_BASE, VIDEOS: videos },
+  );
 };
 
-const createPost = async (body: unknown) => {
+const countRows = async () => {
+  const result = await harness.db.query<{ count: number }>('select count(*)::int as count from posts');
+  return result.rows[0]?.count ?? 0;
+};
+
+const createPost = async (body: unknown, token: string | null = TOKEN) => {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (token !== null) headers['x-upload-token'] = token;
   const response = await app.request(
     'http://local/api/posts',
     {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
     },
     ENV_BASE,
@@ -63,7 +78,7 @@ describe('POST /api/videos', () => {
   it('rejects a request with no file', async () => {
     const response = await app.request(
       'http://local/api/videos',
-      { method: 'POST', body: new FormData() },
+      { method: 'POST', body: new FormData(), headers: WRITE_HEADERS },
       { ...ENV_BASE, VIDEOS: videos },
     );
 
@@ -88,11 +103,74 @@ describe('POST /api/videos', () => {
   it('503s when the bucket is not bound', async () => {
     const response = await app.request(
       'http://local/api/videos',
-      { method: 'POST', body: (() => { const f = new FormData(); f.append('video', new File(['x'], 'a.mp4')); return f; })() },
+      {
+        method: 'POST',
+        body: (() => { const f = new FormData(); f.append('video', new File(['x'], 'a.mp4')); return f; })(),
+        headers: WRITE_HEADERS,
+      },
       ENV_BASE,
     );
 
     expect(response.status).toBe(503);
+  });
+});
+
+describe('write access', () => {
+  it('refuses an upload with no token and stores nothing', async () => {
+    const response = await upload('clip.mp4', 'video/mp4', 'bytes', null);
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'unauthorized' });
+    expect(videos.objects.size).toBe(0);
+  });
+
+  it('refuses an upload carrying the wrong token', async () => {
+    const response = await upload('clip.mp4', 'video/mp4', 'bytes', 'nope');
+
+    expect(response.status).toBe(401);
+    expect(videos.objects.size).toBe(0);
+  });
+
+  it('refuses to create a post with no token', async () => {
+    const before = await countRows();
+    const { status, body } = await createPost({ videoUrl: `${STORED_URL}a.mp4` }, null);
+
+    expect(status).toBe(401);
+    expect(body).toEqual({ error: 'unauthorized' });
+    expect(await countRows()).toBe(before);
+  });
+
+  it('checks the token before the database, so an unconfigured Worker is still refused', async () => {
+    const bare = createApp(() => { throw new Error('must not be called'); });
+    const form = new FormData();
+    form.append('video', new File(['bytes'], 'clip.mp4', { type: 'video/mp4' }));
+
+    const response = await bare.request(
+      'http://local/api/videos',
+      { method: 'POST', body: form },
+      { VIDEOS: videos } as never,
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'uploads_not_configured' });
+  });
+
+  it('leaves the read routes open, since the feed is meant to be public', async () => {
+    const health = await app.request('http://local/api/health', undefined, ENV_BASE);
+    const feed = await app.request('http://local/api/feed', undefined, ENV_BASE);
+
+    expect(health.status).toBe(200);
+    expect(feed.status).toBe(200);
+  });
+
+  it('streams a stored clip back without a token', async () => {
+    const uploaded = await upload('clip.mp4', 'video/mp4', '0123456789');
+    const { url } = await uploaded.json() as { url: string };
+
+    const response = await app.request(`http://local${url}`, undefined, { ...ENV_BASE, VIDEOS: videos });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('0123456789');
   });
 });
 
@@ -201,7 +279,11 @@ describe('POST /api/posts', () => {
   it('rejects a body that is not an object', async () => {
     const response = await app.request(
       'http://local/api/posts',
-      { method: 'POST', headers: { 'content-type': 'application/json' }, body: '"nope"' },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...WRITE_HEADERS },
+        body: '"nope"',
+      },
       ENV_BASE,
     );
 
@@ -217,10 +299,10 @@ describe('POST /api/posts', () => {
       'http://local/api/posts',
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...WRITE_HEADERS },
         body: JSON.stringify({ videoUrl: `${STORED_URL}a.mp4` }),
       },
-      {} as never,
+      { UPLOAD_TOKEN: TOKEN } as never,
     );
 
     expect(response.status).toBe(503);

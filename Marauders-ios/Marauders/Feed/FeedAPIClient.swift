@@ -10,6 +10,16 @@ import Foundation
 enum AppConfig {
     static let apiBaseURL = URL(string: "https://marauders-api.js6ctz7gtj.workers.dev")!
     static let feedPageSize = 5
+
+    /// Shared secret the Worker requires on the two write endpoints.
+    ///
+    /// Read from the bundle rather than written inline so it can be swapped without touching
+    /// code, and so it is obvious in a diff when it changes. A token inside the app is not a
+    /// secret in the cryptographic sense, anyone who unzips the binary can read it; what it buys
+    /// is that the Worker URL alone no longer lets a stranger fill the bucket.
+    static let uploadToken: String = {
+        Bundle.main.object(forInfoDictionaryKey: "MaraudersUploadToken") as? String ?? ""
+    }()
 }
 
 enum ViewerIdentity {
@@ -74,6 +84,7 @@ struct FeedAPIClient {
 
     let baseURL: URL
     let viewerId: String
+    var uploadToken: String = AppConfig.uploadToken
     var session: URLSession = .shared
 
     static let live = FeedAPIClient(baseURL: AppConfig.apiBaseURL, viewerId: ViewerIdentity.current)
@@ -140,7 +151,7 @@ struct FeedAPIClient {
             "caption": caption,
         ])
 
-        let data = try await send(request)
+        let data = try await sendWrite(request)
         do {
             return try JSONDecoder().decode(VideoPost.self, from: data)
         } catch {
@@ -183,12 +194,23 @@ struct FeedAPIClient {
         }
     }
 
-    /// Uploads go out as a file body rather than through `send`, so the status handling is
+    /// Adds the shared secret on top of the headers every request carries.
+    ///
+    /// Only the write routes go through this. Reads stay unauthenticated so the feed keeps working
+    /// for anyone holding the URL, which is the point of it being a feed.
+    private func sendWrite(_ request: URLRequest) async throws -> Data {
+        var request = request
+        request.setValue(uploadToken, forHTTPHeaderField: "X-Upload-Token")
+        return try await send(request)
+    }
+
+    /// Uploads go out as a file body rather than through `sendWrite`, so the status handling is
     /// shared but the transport is not.
     private func sendUpload(_ request: URLRequest, from body: Data) async throws -> Data {
         var request = request
         request.setValue(viewerId, forHTTPHeaderField: "X-Viewer-Id")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(uploadToken, forHTTPHeaderField: "X-Upload-Token")
 
         do {
             return try await perform(request) { try await session.upload(for: $0, from: body) }
