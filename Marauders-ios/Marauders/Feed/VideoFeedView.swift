@@ -17,6 +17,7 @@ struct VideoFeedView: View {
     var isVisible = true
 
     @State private var pool = PlayerPool()
+    @State private var posters = PosterFrameCache()
     @State private var currentID: String?
     @State private var failedIDs: Set<String> = []
     @State private var isExhausted = false
@@ -95,7 +96,8 @@ struct VideoFeedView: View {
                         onLoadFailed: { handleLoadFailure(of: post.id) },
                         onDidReachEnd: { advance(from: post.id) },
                         isVisible: isVisible,
-                        restartToken: restartToken
+                        restartToken: restartToken,
+                        posters: posters
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .containerRelativeFrame(.vertical)

@@ -81,7 +81,10 @@ final class PlayerPool {
 
         let asset = AVURLAsset(url: post.videoURL)
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 2
+        // Four seconds is where swiping stopped stalling. Two was short enough that a fast
+        // scroll hit an unbuffered clip almost every time, and the pool holds four clips at once
+        // so the extra buffering is bounded rather than growing with the feed.
+        item.preferredForwardBufferDuration = 4
 
         let player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .none

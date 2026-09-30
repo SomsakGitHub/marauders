@@ -27,6 +27,10 @@ let onLoadFailed: () -> Void
     /// Bumped by the feed to rewind this clip. Used when the feed has run out and its last clip
     /// has to play again rather than sit frozen.
     var restartToken = 0
+    /// Session scoped poster frames, so a clip that has not buffered yet still shows a picture.
+    var posters = PosterFrameCache()
+
+    @State private var poster: UIImage?
 
     @State private var player: AVPlayer?
     @State private var loadState: PlaybackLoadState = .loading
@@ -47,6 +51,17 @@ let onLoadFailed: () -> Void
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
+
+            // Under the video rather than in place of it. The poster is what is on screen while
+            // the player is still buffering, and it disappears under the first real frame rather
+            // than fading, so there is no crossfade to notice on every swipe.
+            if let poster {
+                Image(uiImage: poster)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
+            }
 
             if let player {
                 AmbientVideoBackdrop(player: player)
@@ -95,6 +110,12 @@ let onLoadFailed: () -> Void
             guard isActive, isVisible else { return }
             restart()
         }
+        .task(id: post.videoURL) {
+            // Asked on appearance, not on becoming active. A clip the viewer is about to scroll
+            // into is exactly the one that needs its poster, and waiting until it is on screen
+            // is too late to be useful.
+            poster = await posters.poster(for: post.videoURL)
+        }
         .onChange(of: scenePhase) { _, _ in
             // Coming back from the background has to re-issue the play, because the pool paused
             // every player on the way out and nothing else is holding the intent.
@@ -127,9 +148,13 @@ let onLoadFailed: () -> Void
     private var statusOverlay: some View {
         switch loadState {
         case .loading:
-            ProgressView()
-                .controlSize(.large)
-                .tint(.white.opacity(0.9))
+            // A spinner over a poster that already shows the clip is noise. It only appears when
+            // there is genuinely nothing on screen yet.
+            if poster == nil {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white.opacity(0.9))
+            }
         case .failed(let message):
             errorCard(message)
         case .ready:
