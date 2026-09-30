@@ -101,10 +101,12 @@ struct UploadView: View {
         }
     }
 
-    /// Copies the picked clip out of the photo library before uploading.
+    /// Copies the picked clip out of the photo library, shrinks it, then uploads the result.
     ///
     /// The library hands back a file that can vanish as soon as the picker call returns, so it
-    /// is moved to a path this scope owns.
+    /// is moved to a path this scope owns. That copy is re-encoded before it goes out, both to
+    /// bring the bitrate down to something the feed can stream and to move the file's metadata to
+    /// the front. The re-encoded file is a `.mp4` whatever the picker handed over.
     private func publish(_ item: PhotosPickerItem) async {
         isPreparingClip = true
         defer {
@@ -119,10 +121,13 @@ struct UploadView: View {
             }
             defer { try? FileManager.default.removeItem(at: clip.url) }
 
+            let optimized = try await ClipTranscoder.transcode(clip.url)
+            defer { try? FileManager.default.removeItem(at: optimized) }
+
             if let newID = await store.publish(
-                clipURL: clip.url,
-                filename: clip.filename,
-                contentType: clip.contentType,
+                clipURL: optimized,
+                filename: optimized.lastPathComponent,
+                contentType: "video/mp4",
                 caption: ""
             ) {
                 onPublished(newID)

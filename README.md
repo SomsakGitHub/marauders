@@ -157,6 +157,14 @@ post.
 - The body is written with `file.stream()` rather than a buffer, so a large clip does not have
   to fit in the isolate
 
+The client re-encodes before it uploads. A phone clip arrives around 16 Mbit/s, which puts a 33
+second clip at roughly 64 MB and the metadata atom at the end of the file, so a player has to fetch
+the tail before it can start. `ClipTranscoder` rewrites the video at 6 Mbit/s, keeps the plain AAC
+track, drops the ambisonic one, carries the rotation transform onto the output, and asks the writer
+to lay the metadata out at the front. Measured on a 64 MB / 32 second clip, that is 25 MB, 37% of
+the ceiling, in about four seconds of encode. The server side stays the same either way; this just
+makes the clips smaller and streamable.
+
 ## Write access
 
 `POST /api/videos` and `POST /api/posts` are the two routes that cost money or write rows, and
@@ -318,12 +326,14 @@ Marauders-ios/
       FeedAPIClient.swift        URLSession client, viewer identity, errors, upload
       MultipartBody.swift        multipart/form-data encoder for the clip
       PickedVideo.swift          PhotosPicker transfer that stages the clip on disk
+      ClipTranscoder.swift       Re-encodes and fast-starts a clip before upload
       UploadView.swift           Upload tab: picker, progress and error state
       VideoPost.swift            Post model and preview fixtures
   MaraudersTests/
     PlayerPoolTests.swift        Eviction, pinning and cache tests
     FeedStoreTests.swift         Pagination, optimistic rollback and publish tests
     MultipartBodyTests.swift     Boundary, escaping and binary fidelity tests
+    ClipTranscoderTests.swift    Target size, track selection and fast-start tests
 
 server/
   src/index.ts                   Hono routes, upload, and R2 streaming
@@ -454,13 +464,17 @@ eviction order, pin protection, recency refresh, invalidation and mute forwardin
 prefetch threshold, the failed-feed phase, optimistic likes, rollback when the API
 rejects a reaction, and publishing a clip end to end. `MultipartBodyTests` pins the boundary
 format, the filename escaping and that binary bytes survive the encoding unchanged.
+`ClipTranscoderTests` covers the target size for portrait, landscape and oversized clips, the AAC
+versus ambisonic track choice, and re-encodes a generated rotated clip to check it stays the right
+way up and comes back with its metadata at the front.
 
-**Uploads are two calls, and the clip is staged before the first one.** `PhotosPicker` hands
+**Uploads are two calls, and the clip is staged before the first one.** `PhotosPicker` hands the
+clip to `PickedVideo`, which copies it out of the library before the picker call returns, and
+`ClipTranscoder` re-encodes that copy before `FeedStore` uploads it.
+
 ## Roadmap
 
 - Auth so viewer identity survives reinstalls, and so the upload endpoint stops being open
-- Transcode on upload so a `.mov` from the camera plays everywhere instead of relying on the
-  container the phone happened to record
 - Comment sheet, profile tab and search
 - Preload tuning based on measured scroll behaviour on device
 - Offline cache for the last viewed clips
