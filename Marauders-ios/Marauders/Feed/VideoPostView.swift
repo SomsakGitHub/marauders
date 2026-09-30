@@ -18,10 +18,15 @@ struct VideoPostView: View {
     let post: VideoPost
     let isActive: Bool
     let pool: PlayerPool
-    let onLoadFailed: () -> Void
-    /// False while another tab covers the feed. The player stays alive so the clip is not
+let onLoadFailed: () -> Void
+    /// The clip reached its end on its own, which moves the feed forward instead of looping.
+    let onDidReachEnd: () -> Void
+    /// False while another tab covers the feed. The player is kept so the clip is not
     /// reloaded, but nothing is allowed to make noise from behind an opaque screen.
     var isVisible = true
+    /// Bumped by the feed to rewind this clip. Used when the feed has run out and its last clip
+    /// has to play again rather than sit frozen.
+    var restartToken = 0
 
     @State private var player: AVPlayer?
     @State private var loadState: PlaybackLoadState = .loading
@@ -35,6 +40,7 @@ struct VideoPostView: View {
     @State private var timeToken: Any?
     @State private var statusObservation: NSKeyValueObservation?
     @State private var failureToken: (any NSObjectProtocol)?
+    @State private var endToken: (any NSObjectProtocol)?
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -84,6 +90,10 @@ struct VideoPostView: View {
         }
         .onChange(of: isVisible) { _, _ in
             syncPlayback()
+        }
+        .onChange(of: restartToken) { _, _ in
+            guard isActive, isVisible else { return }
+            restart()
         }
         .onChange(of: scenePhase) { _, _ in
             // Coming back from the background has to re-issue the play, because the pool paused
@@ -228,6 +238,10 @@ struct VideoPostView: View {
             NotificationCenter.default.removeObserver(failureToken)
             self.failureToken = nil
         }
+        if let endToken {
+            NotificationCenter.default.removeObserver(endToken)
+            self.endToken = nil
+        }
         pool.detach(from: post)
         player?.pause()
         player = nil
@@ -268,6 +282,40 @@ struct VideoPostView: View {
             loadState = .failed(error?.localizedDescription ?? "เล่นวิดีโอไม่สำเร็จ")
             reportFailure()
             bound?.pause()
+        }
+
+        // A clip that finishes hands the feed forward rather than starting itself over. The
+        // player is left paused at the end frame, so if the feed decides to come back to this
+        // post it has to restart it deliberately.
+        endToken = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak bound] _ in
+            guard bound?.rate != 0 else { return }
+            bound?.pause()
+            Task { @MainActor in
+                guard loadState == .ready else { return }
+                onDidReachEnd()
+            }
+        }
+    }
+
+    /// Rewinds to the first frame and hands control back to the play intent.
+    ///
+    /// The intent is captured by value rather than capturing `self`, because this is a struct and
+    /// a seek completion outlives the call. Deciding up front also means a clip rewound while the
+    /// feed is covered stays paused instead of starting on its own.
+    private func restart() {
+        guard let player else { return }
+        let shouldResume = intent.shouldPlay
+        progress = 0
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            Task { @MainActor in
+                if shouldResume {
+                    player.play()
+                }
+            }
         }
     }
 
@@ -319,7 +367,8 @@ struct VideoPostView: View {
         post: VideoPost.samples[0],
         isActive: true,
         pool: PlayerPool(),
-        onLoadFailed: {}
+        onLoadFailed: {},
+        onDidReachEnd: {}
     )
     .ignoresSafeArea()
 }

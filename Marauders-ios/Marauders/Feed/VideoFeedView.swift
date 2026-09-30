@@ -20,6 +20,9 @@ struct VideoFeedView: View {
     @State private var currentID: String?
     @State private var failedIDs: Set<String> = []
     @State private var isExhausted = false
+    /// Bumped to rewind whatever clip is on screen. Only used when the feed has run out and
+    /// needs to show its last clip again.
+    @State private var restartToken = 0
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -90,7 +93,9 @@ struct VideoFeedView: View {
                         isActive: post.id == currentID,
                         pool: pool,
                         onLoadFailed: { handleLoadFailure(of: post.id) },
-                        isVisible: isVisible
+                        onDidReachEnd: { advance(from: post.id) },
+                        isVisible: isVisible,
+                        restartToken: restartToken
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .containerRelativeFrame(.vertical)
@@ -279,39 +284,59 @@ struct VideoFeedView: View {
     /// A clip that cannot play is skipped rather than shown. Preloaded clips report in ahead of
     /// time, so a failure on an inactive post is only remembered here; the jump happens when it
     /// is the one being watched.
+    ///
+    /// A failure moves the feed exactly the way a clip reaching its end does, so both paths share
+    /// one rule and neither can drift from the other.
     private func handleLoadFailure(of postID: String) {
         failedIDs.insert(postID)
         guard postID == currentID, !isExhausted else { return }
-        skip(after: postID)
+        advance(from: postID, clipFailed: true)
     }
 
-    private func skip(after postID: String) {
-        if let next = nextPlayable(after: postID) {
+    private func advance(from postID: String, clipFailed: Bool = false) {
+        guard postID == currentID, !isExhausted else { return }
+
+        switch resolveMove(after: postID) {
+        case .advance(let next):
             isExhausted = false
             currentID = next
-            return
-        }
 
-        // The failure landed on the last loaded post, so the page boundary may be hiding more
-        // clips. Pull the next page before deciding the feed is done.
-        guard store.hasMore else {
-            isExhausted = true
-            return
-        }
-
-        Task {
-            await store.loadMore(after: postID)
-            if let next = nextPlayable(after: postID) {
-                isExhausted = false
-                currentID = next
-            } else {
-                isExhausted = true
+        case .needsMoreClips:
+            // The last loaded clip is done, so the page boundary may be hiding more. Pull the
+            // next page before deciding the feed has run out.
+            isExhausted = false
+            Task {
+                await store.loadMore(after: postID)
+                switch resolveMove(after: postID) {
+                case .advance(let next):
+                    currentID = next
+                case .needsMoreClips, .exhausted:
+                    finish(at: postID, clipFailed: clipFailed)
+                }
             }
+
+        case .exhausted:
+            finish(at: postID, clipFailed: clipFailed)
         }
     }
 
-    private func nextPlayable(after postID: String) -> String? {
-        PlaybackSkipper.next(after: postID, in: store.posts.map(\.id), skipping: failedIDs)
+    private func resolveMove(after postID: String) -> PlaybackSkipper.Move {
+        PlaybackSkipper.move(
+            after: postID,
+            in: store.posts.map(\.id),
+            skipping: failedIDs,
+            hasMore: store.hasMore
+        )
+    }
+
+    /// The feed has nothing left to move to. A clip that failed gets the exhausted card, because
+    /// showing it again would only fail again. A clip that simply finished is the last good clip
+    /// there is, so it plays again rather than leaving the feed on a frozen last frame.
+    private func finish(at postID: String, clipFailed: Bool) {
+        isExhausted = clipFailed
+        if !clipFailed {
+            restartToken &+= 1
+        }
     }
 }
 

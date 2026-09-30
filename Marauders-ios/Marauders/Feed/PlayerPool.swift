@@ -12,7 +12,6 @@ final class PlayerPool {
     private var players: [URL: AVPlayer] = [:]
     private var accessOrder: [URL] = []
     private var pinned: Set<URL> = []
-    private var loopTokens: [URL: any NSObjectProtocol] = [:]
     private var sessionTokens: [any NSObjectProtocol] = []
     private var activeURL: URL?
     private let capacity: Int
@@ -24,9 +23,6 @@ final class PlayerPool {
     }
 
     deinit {
-        for token in loopTokens.values {
-            NotificationCenter.default.removeObserver(token)
-        }
         for token in sessionTokens {
             NotificationCenter.default.removeObserver(token)
         }
@@ -94,26 +90,7 @@ final class PlayerPool {
 
         players[post.videoURL] = player
         accessOrder.append(post.videoURL)
-        installLoopObserver(for: post.videoURL, player: player)
         return player
-    }
-
-    private func installLoopObserver(for url: URL, player: AVPlayer) {
-        guard let item = player.currentItem else { return }
-        let token = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
-            queue: .main
-        ) { [weak player] _ in
-            guard let player else { return }
-            let wasPlaying = player.rate != 0
-            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
-                if wasPlaying {
-                    player.play()
-                }
-            }
-        }
-        loopTokens[url] = token
     }
 
     private func touch(_ url: URL) {
@@ -125,10 +102,6 @@ final class PlayerPool {
         players[url]?.pause()
         players[url] = nil
         accessOrder.removeAll { $0 == url }
-        if let token = loopTokens[url] {
-            NotificationCenter.default.removeObserver(token)
-            loopTokens[url] = nil
-        }
     }
 
     private func evictIfNeeded() {
