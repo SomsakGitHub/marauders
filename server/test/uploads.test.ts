@@ -231,6 +231,35 @@ describe('GET /api/videos/:key', () => {
     expect(response.status).toBe(416);
   });
 
+  it('answers a range past the end of the clip with 416, not a server error', async () => {
+    // A range can parse cleanly and still fall outside the object. R2 rejects those, and the
+    // answer has to be the RFC's 416 rather than the 500 that a thrown error would otherwise
+    // become.
+    const uploaded = await upload('clip.mp4', 'video/mp4', '0123456789');
+    const { url } = await uploaded.json() as { url: string };
+
+    const response = await app.request(
+      `http://local${url}`,
+      { headers: { Range: 'bytes=99999999-' } },
+      { ...ENV_BASE, VIDEOS: videos },
+    );
+
+    expect(response.status).toBe(416);
+    expect(response.headers.get('Content-Range')).toBe('bytes */10');
+    expect(response.headers.get('Accept-Ranges')).toBe('bytes');
+  });
+
+  it('still 404s a ranged read of a clip that does not exist', async () => {
+    // The same null on a ranged read has to stay a 404 when there is no object behind it.
+    const response = await app.request(
+      'http://local/api/videos/missing.mp4',
+      { headers: { Range: 'bytes=0-3' } },
+      { ...ENV_BASE, VIDEOS: videos },
+    );
+
+    expect(response.status).toBe(404);
+  });
+
   it('404s an unknown clip and refuses to walk out of the prefix', async () => {
     const missing = await app.request('http://local/api/videos/nope.mp4', undefined, { ...ENV_BASE, VIDEOS: videos });
     const traversal = await app.request('http://local/api/videos/..%2F..%2Fseed.sql', undefined, { ...ENV_BASE, VIDEOS: videos });

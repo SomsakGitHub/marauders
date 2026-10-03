@@ -204,8 +204,10 @@ has no accounts, and it is not a substitute for accounts later.
 A `Range` header is passed through to R2 and the resolved slice is turned back into
 `Content-Range`, which is what lets `AVPlayer` seek without downloading the whole file. Only a
 single range is honoured: answering the multipart `byteranges` form would mean prefixing each
-part onto the body, and no media client asks for it. A malformed or unsatisfiable range is a
-`416` rather than a silent full-body fallback.
+part onto the body, and no media client asks for it. A malformed range is a `416` up front. A
+range that parses but falls past the end of the clip is only known once R2 has refused it, so
+that case costs one `HEAD` to tell a missing clip (`404`) from an unsatisfiable one, and answers
+`416` with the length named in `Content-Range`.
 
 The response status follows the request, not the shape of the result. R2 reports a range even
 for a full read, so keying the `206` off `object.range` would turn every plain request into a
@@ -445,7 +447,8 @@ paging without gaps or repeats, page size clamping, counter idempotency and view
 `api.test.ts` drives the Hono app directly to check status codes, the camelCase payload shape
 the iOS client decodes, and the unconfigured-database path. `uploads.test.ts` runs the upload
 and streaming routes against an in-memory R2 double, covering a plain read versus a `200`/`206`
-split, suffix ranges, an unsatisfiable range, a path that tries to escape the `videos/` prefix,
+split, suffix ranges, a range past the end of the clip and a ranged read of a missing one, a
+path that tries to escape the `videos/` prefix,
 the post creation rules, and that the write routes refuse a caller with no token.
 `write-guard.test.ts` covers the guard on its own: the fail closed path when the secret is absent,
 prefix and timing resistance, the rate window, and that unauthenticated attempts are not charged

@@ -179,31 +179,56 @@ export function createApp(resolve: ClientResolver) {
 
     const range = parseRange(c.req.header('Range'));
     if (range === null) {
-      return new Response(null, { status: 416, headers: withType(new Headers(), typeFor(name)) });
+      return unsatisfiable(withType(new Headers(), typeFor(name)));
     }
 
     // The range is resolved by R2 rather than sliced here, so seeking does not pull the whole
     // clip through the isolate.
-    const object = range === undefined
-      ? await videos.get(`videos/${name}`)
-      : await videos.get(`videos/${name}`, { range });
-    if (!object) {
-      return c.json({ error: 'not_found' }, 404);
+    const key = `videos/${name}`;
+    if (range === undefined) {
+      const object = await videos.get(key);
+      if (!object) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return respond(object, null);
     }
 
-    const headers = withType(new Headers(), object.httpMetadata?.contentType ?? typeFor(name));
-
-    // R2 reports a range even for a full read, so the status follows the request rather than
-    // the shape of the response: only an actual Range request earns a 206.
-    const resolved = range === undefined ? null : resolvedRange(object);
-    if (resolved) {
-      headers.set('Content-Range', contentRangeHeader(resolved, object.size));
-      headers.set('Content-Length', String(resolved.size));
-      return new Response(object.body, { status: 206, headers });
+    let ranged: R2ObjectBody | null;
+    try {
+      ranged = await videos.get(key, { range });
+    } catch {
+      // R2 rejects a range that falls outside the object rather than answering it, so a range
+      // that parses but cannot be satisfied arrives as a thrown error and has to become a 416.
+      ranged = null;
     }
 
-    headers.set('Content-Length', String(object.size));
-    return new Response(object.body, { status: 200, headers });
+    if (!ranged) {
+      // A null on a ranged read is ambiguous: the clip may be missing, or the range may be
+      // unsatisfiable. One HEAD settles which, and only on this rare path.
+      const head = await videos.head(key);
+      if (!head) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return unsatisfiable(withType(new Headers(), typeFor(name)), head.size);
+    }
+
+    return respond(ranged, resolvedRange(ranged));
+
+    /** Answers a successful read, 206 when a range was actually asked for. */
+    function respond(object: R2ObjectBody, resolved: ResolvedRange | null): Response {
+      const headers = withType(new Headers(), object.httpMetadata?.contentType ?? typeFor(name));
+
+      // R2 reports a range even for a full read, so the status follows the request rather than
+      // the shape of the response: only an actual Range request earns a 206.
+      if (resolved) {
+        headers.set('Content-Range', contentRangeHeader(resolved, object.size));
+        headers.set('Content-Length', String(resolved.size));
+        return new Response(object.body, { status: 206, headers });
+      }
+
+      headers.set('Content-Length', String(object.size));
+      return new Response(object.body, { status: 200, headers });
+    }
   });
 
   app.post('/api/posts', async (c) => {
@@ -351,6 +376,21 @@ function resolvedRange(object: R2ObjectBody): ResolvedRange | null {
 
 function contentRangeHeader(range: ResolvedRange, totalSize: number): string {
   return `bytes ${range.start}-${range.end}/${totalSize}`;
+}
+
+/**
+ * Answers a range that cannot be satisfied.
+ *
+ * RFC 7233 wants a 416 to name the clip length in its `Content-Range` header. That is only known
+ * once the clip has turned out to exist, so the size is passed in when the request got far enough
+ * to look for it.
+ */
+function unsatisfiable(headers: Headers, size?: number): Response {
+  headers.set('Accept-Ranges', 'bytes');
+  if (size !== undefined) {
+    headers.set('Content-Range', `bytes */${size}`);
+  }
+  return new Response(null, { status: 416, headers });
 }
 
 function withType(headers: Headers, type: string): Headers {

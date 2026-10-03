@@ -46,9 +46,24 @@ export function createFakeR2Bucket(): FakeR2Bucket {
     if (!stored || body === null) return null;
 
     const full = stored.body;
-    const sliceOfRange = range === undefined ? full : slice(full, range);
-    if (!sliceOfRange) return null;
+    // R2 throws on a range that falls outside the object rather than handing back nothing, and
+    // the route has to turn that into a 416. Answering null here instead would let the real
+    // behaviour go untested.
+    if (range !== undefined) {
+      const sliceOfRange = slice(full, range);
+      if (!sliceOfRange) throw new RangeError('range not satisfiable');
+      return assemble(key, full, stored.type, sliceOfRange, range);
+    }
+    return assemble(key, full, stored.type, full, range);
+  };
 
+  const assemble = (
+    key: string,
+    full: Uint8Array,
+    type: string,
+    sliceOfRange: Uint8Array,
+    range: R2Range | undefined,
+  ) => {
     // R2 always reports a range, even for a full read, so the fake does the same. The route
     // has to key off the request to answer 200 rather than 206.
     const resolved = {
@@ -65,7 +80,7 @@ export function createFakeR2Bucket(): FakeR2Bucket {
       key,
       size: full.length,
       uploaded: new Date(0),
-      httpMetadata: { contentType: stored.type },
+      httpMetadata: { contentType: type },
       body: new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(sliceOfRange);
